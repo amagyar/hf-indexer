@@ -22,7 +22,7 @@ LOG = logging.getLogger("build_parquet")
 # Explicit column dtypes for DuckDB / Parquet optimization.
 NUMERIC_INT_COLS = ("downloads", "likes")
 NUMERIC_FLOAT_COLS = ("size_b",)
-TIMESTAMP_COLS = ("created_at", "modified_at")
+TIMESTAMP_COLS = ("created_at", "modified_at", "metrics_refreshed_at")
 LIST_COLS = ("tags",)
 
 

@@ -46,7 +46,7 @@
 
 ## 6. Verification
 
-- [ ] 6.1 Trigger `workflow_dispatch` on a branch and confirm `gh-pages` receives `index.html`, `app.js`, `styles.css`, `models.jsonl.gz`, `models.parquet`
+- [x] 6.1 Trigger `workflow_dispatch` on a branch and confirm `gh-pages` receives `index.html`, `app.js`, `styles.css`, `models.jsonl.gz`, `models.parquet`
 - [x] 6.2 Confirm `main` remains free of `models.jsonl.gz` and `models.parquet`
-- [ ] 6.3 Open the deployed GitHub Pages URL and verify DuckDB WASM initializes, the view is created, and a filter query returns rows
-- [ ] 6.4 Verify a second hourly run performs an incremental update (stops at watermark) rather than a full rescan
+- [x] 6.3 Open the deployed GitHub Pages URL and verify DuckDB WASM initializes, the view is created, and a filter query returns rows
+- [x] 6.4 Verify a second hourly run performs an incremental update (stops at watermark) rather than a full rescan

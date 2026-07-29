@@ -29,17 +29,32 @@ The system SHALL progressively index older historical models using the HF API's 
 - **WHEN** the fetcher runs and backfill is not yet complete
 - **THEN** the system SHALL resume from the persisted cursor and fetch up to `--limit` more (older) models, then persist the new cursor for the next run
 
-#### Scenario: Backfill completes
+#### Scenario: Backfill completes -> continuous metrics sweep begins
 - **WHEN** a backfill pass consumes a page after which the API returns no `next` cursor
-- **THEN** the system SHALL mark backfill complete in `backfill_state.json` and subsequent runs SHALL perform the incremental pass only
+- **THEN** the system SHALL mark backfill complete in `backfill_state.json` and reset the cursor to newest, so subsequent runs keep cycling through the catalog as a **metrics sweep** that refreshes each model's `downloads`/`likes` (rather than stopping)
+
+#### Scenario: Metrics sweep cycles indefinitely
+- **WHEN** backfill is already complete and the fetcher runs
+- **THEN** the system SHALL resume the sweep from the persisted cursor, refresh up to `--limit` models, and on exhaustion reset the cursor to newest to begin the next cycle - so every model's popularity counters are refreshed roughly once per (catalog_size / limit) runs
 
 #### Scenario: Backfill disabled for a run
 - **WHEN** the fetcher is invoked with `--no-backfill` (or `--limit 0`)
-- **THEN** the system SHALL skip the backfill pass entirely and run only the incremental pass
+- **THEN** the system SHALL skip the backfill/sweep pass entirely and run only the incremental pass
 
 #### Scenario: First run with empty state
 - **WHEN** state is empty (remote `models.jsonl.gz` returns 404) and there is no backfill cursor
 - **THEN** the system SHALL skip the incremental pass and run the backfill pass from newest (no cursor), collecting up to `--limit` models and persisting the resulting cursor
+
+### Requirement: Popularity counter freshness
+Because Hugging Face `downloads`/`likes` drift continuously and independently of `lastModified`, the system SHALL refresh them via the metrics sweep (not only the incremental pass) and SHALL stamp each refreshed record with a `metrics_refreshed_at` timestamp indicating when its counters were captured.
+
+#### Scenario: Counters refreshed on every touch
+- **WHEN** any pass (incremental, backfill, or sweep) writes a model record
+- **THEN** the record SHALL carry `metrics_refreshed_at` set to the run's capture time
+
+#### Scenario: Untouched records keep their last capture time
+- **WHEN** a model is not visited during a run
+- **THEN** its `metrics_refreshed_at` SHALL remain unchanged, surfacing how stale its counters are
 
 ### Requirement: Parse quantization from tags
 The system SHALL derive each model's `quant` field from its tags array.
@@ -68,7 +83,7 @@ The system SHALL derive `size_b` (in billions of parameters, as a float) using a
 - **THEN** the system SHALL set `size_b` to null
 
 ### Requirement: Schema compliance
-Each JSONL record SHALL conform to the schema: `id`, `author`, `url`, `size_b`, `quant`, `tags`, `downloads`, `likes`, `created_at`, `modified_at`.
+Each JSONL record SHALL conform to the schema: `id`, `author`, `url`, `size_b`, `quant`, `tags`, `downloads`, `likes`, `created_at`, `modified_at`, `metrics_refreshed_at`.
 
 #### Scenario: Record fields
 - **WHEN** a model record is written to `models.jsonl.gz`

@@ -9,12 +9,15 @@ Two passes run each invocation:
    - Stop at the `modified_at` watermark (the newest model already in state).
    - Naturally bounded - only catches models modified since the last run.
 
-2. **Backfill pass** (catches older historical models, iteratively):
+2. **Backfill / metrics-sweep pass** (catches older historical models, then refreshes popularity):
    - Resume from a persisted pagination `cursor` (the HF API's `Link: rel="next"`
      cursor, which encodes `lastModified < <timestamp>`).
    - Fetch up to `--limit` more models this run, then persist the new cursor.
-   - When the API returns no next cursor, backfill is complete and only the
-     incremental pass runs thereafter.
+   - When the API returns no next cursor, backfill is marked **complete** and the
+     cursor resets to newest - the pass then keeps cycling through the catalog as
+     a **metrics sweep**, refreshing `downloads`/`likes` (which drift continuously
+     and are independent of `lastModified`). At `--limit 50000`/hour over ~1M
+     models, every record's counters refresh roughly once per day.
 
 The cursor is stored in `backfill_state.json` alongside `models.jsonl.gz` so each
 run resumes exactly where the last stopped - no re-iteration, no quadratic cost.
@@ -67,7 +70,7 @@ KNOWN_QUANTS = ("gguf", "awq", "gptq", "exl2")
 # Canonical JSONL schema order.
 RECORD_KEYS = (
     "id", "author", "url", "size_b", "quant", "tags",
-    "downloads", "likes", "created_at", "modified_at",
+    "downloads", "likes", "created_at", "modified_at", "metrics_refreshed_at",
 )
 
 
@@ -139,13 +142,20 @@ def parse_size(tags: Iterable[str], model_id: str) -> Optional[float]:
     return None
 
 
-def model_to_record(model: Dict[str, Any]) -> Dict[str, Any]:
-    """Convert a raw HF API model dict to our JSONL record dict."""
+def model_to_record(model: Dict[str, Any], captured_at: Optional[str] = None) -> Dict[str, Any]:
+    """Convert a raw HF API model dict to our JSONL record dict.
+
+    `captured_at` is an ISO-8601 UTC timestamp stamped on the record as
+    `metrics_refreshed_at`, i.e. when its popularity counters were last
+    refreshed from the Hub. Defaults to now.
+    """
     model_id = model.get("id", "") or ""
     author = model.get("author") or (model_id.split("/", 1)[0] if "/" in model_id else "")
     tags = list(model.get("tags") or [])
     last_modified = model.get("lastModified")
     created_at = model.get("createdAt") or last_modified
+    if captured_at is None:
+        captured_at = _iso_z(datetime.now(timezone.utc))
     return {
         "id": model_id,
         "author": author,
@@ -157,6 +167,7 @@ def model_to_record(model: Dict[str, Any]) -> Dict[str, Any]:
         "likes": int(model.get("likes") or 0),
         "created_at": _iso_z(created_at),
         "modified_at": _iso_z(last_modified),
+        "metrics_refreshed_at": captured_at,
     }
 
 
@@ -370,17 +381,29 @@ def incremental_pass(watermark: Optional[datetime]) -> List[Dict[str, Any]]:
     return collected
 
 
-def backfill_pass(start_cursor: Optional[str], batch_limit: int) -> Tuple[List[Dict[str, Any]], Optional[str], bool]:
-    """Resume backfill from `start_cursor`; fetch up to `batch_limit` models.
+def backfill_or_sweep_pass(start_cursor: Optional[str], batch_limit: int,
+                           sweeping: bool = False) -> Tuple[List[Dict[str, Any]], Optional[str], bool]:
+    """Fetch up to `batch_limit` models from the Hub, resuming from `start_cursor`.
 
-    Returns (models, resume_cursor, complete):
+    This single pass serves two purposes over the life of the index:
+      - **Backfill** (before history is complete): advances the cursor through
+        older models to fill in historical coverage.
+      - **Metrics sweep** (after history is complete): keeps cycling through
+        already-known models to refresh `downloads`/`likes`, which drift
+        continuously and are NOT tied to `lastModified`.
+
+    Returns (models, resume_cursor, exhausted):
       - resume_cursor: cursor to persist for the next run (None if exhausted).
-      - complete: True if the API returned no next page (full history indexed).
+      - exhausted: True if the API returned no next page (reached the oldest
+        model). The caller resets the cursor to None so the next run restarts
+        from newest - completing one backfill, or starting a new sweep cycle.
     """
     if batch_limit <= 0:
-        LOG.info("Backfill pass disabled (batch_limit <= 0).")
+        LOG.info("%s pass disabled (batch_limit <= 0).",
+                 "Sweep" if sweeping else "Backfill")
         return [], start_cursor, False
-    LOG.info("Backfill pass: resuming from cursor=%s, batch_limit=%d",
+    LOG.info("%s pass: resuming from cursor=%s, batch_limit=%d",
+             "Sweep" if sweeping else "Backfill",
              "set" if start_cursor else "newest", batch_limit)
 
     collected: List[Dict[str, Any]] = []
@@ -393,7 +416,8 @@ def backfill_pass(start_cursor: Optional[str], batch_limit: int) -> Tuple[List[D
         if not next_cursor:
             return collected, None, True  # exhausted - no more pages
         cursor = next_cursor
-    LOG.info("Backfill pass collected %d model(s); resume cursor set.", len(collected))
+    LOG.info("%s pass collected %d model(s); resume cursor set.",
+             "Sweep" if sweeping else "Backfill", len(collected))
     return collected, cursor, False
 
 
@@ -439,9 +463,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     run = parser.add_argument_group("run control")
     run.add_argument("--limit", type=int, default=DEFAULT_BACKFILL_LIMIT,
-                     help=f"Max models to fetch in the backfill pass this run (default {DEFAULT_BACKFILL_LIMIT}).")
+                     help=f"Max models to fetch in the backfill/sweep pass this run (default {DEFAULT_BACKFILL_LIMIT}).")
     run.add_argument("--no-backfill", action="store_true",
-                     help="Skip the backfill pass (incremental updates only).")
+                     help="Skip the backfill/sweep pass (incremental updates only).")
     args = parser.parse_args(argv)
 
     base_url = resolve_base_url(args)
@@ -453,17 +477,29 @@ def main(argv: Optional[List[str]] = None) -> int:
     watermark = compute_watermark(state)
     new_models = incremental_pass(watermark)
 
-    # --- Backfill pass (resume from cursor, bounded by --limit) ---
+    # --- Backfill / metrics-sweep pass (resume from cursor, bounded by --limit) ---
+    # Before history is complete this fills in older models (backfill). After
+    # completion it keeps cycling through the catalog to refresh popularity
+    # counters (metrics sweep). The pass always runs unless --no-backfill.
     resume_cursor = backfill.get("cursor")
     complete = bool(backfill.get("complete", False))
-    backfill_models: List[Dict[str, Any]] = []
-    if not args.no_backfill and not complete:
-        backfill_models, resume_cursor, complete = backfill_pass(resume_cursor, args.limit)
+    sweep_models: List[Dict[str, Any]] = []
+    if not args.no_backfill:
+        sweep_models, resume_cursor, exhausted = backfill_or_sweep_pass(
+            resume_cursor, args.limit, sweeping=complete
+        )
+        if exhausted:
+            # Reached the oldest model. Mark backfill complete (idempotent) and
+            # reset the cursor so the next run restarts from newest - beginning
+            # a fresh metrics-sweep cycle.
+            complete = True
+            resume_cursor = None
 
-    # --- Merge into state ---
+    # --- Merge into state (stamp all refreshed records with the run timestamp) ---
+    run_ts = _iso_z(datetime.now(timezone.utc))
     merged = 0
-    for model in [*new_models, *backfill_models]:
-        record = model_to_record(model)
+    for model in [*new_models, *sweep_models]:
+        record = model_to_record(model, captured_at=run_ts)
         if not record["id"]:
             continue
         state[record["id"]] = record
@@ -473,7 +509,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     write_local_state(state, args.output)
     write_local_backfill({"cursor": resume_cursor, "complete": complete}, args.backfill_output)
     if complete:
-        LOG.info("Backfill is COMPLETE. Future runs are incremental-only.")
+        LOG.info("Backfill complete. Running continuous metrics sweep "
+                 "(cursor cycles through the catalog to refresh downloads/likes).")
     return 0
 
 

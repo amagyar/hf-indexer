@@ -71,6 +71,15 @@ The HF API paginates via a `cursor` query parameter (exposed in the `Link: rel="
 **Alternatives considered:**
 - Keep `huggingface_hub` for incremental, raw HTTP for backfill → rejected: two code paths for the same API; unnecessary complexity.
 
+### Decision 4c: Continuous metrics sweep (popularity counters drift independently of `lastModified`)
+**Choice:** After the backfill cursor exhausts, do NOT stop. Reset the cursor to newest and keep cycling the same pass as a **metrics sweep**: each run advances through another `--limit` chunk of already-known models, refreshing their `downloads`/`likes`. Every refreshed record is stamped with `metrics_refreshed_at` (capture time); untouched records keep their prior stamp.
+**Rationale:** The incremental pass is keyed on `lastModified`, but `downloads`/`likes` change constantly *without* bumping `lastModified` (they are not file changes). Without the sweep, a stable-but-popular model (e.g. `all-MiniLM-L6-v2`, unchanged for months) would show a frozen download count forever. At `--limit 50000`/hour over ~1M models, the sweep refreshes each record's counters roughly once per day.
+**Alternatives considered:**
+- Stop after backfill complete (incremental-only) → rejected: popularity numbers go stale for any model that doesn't get file edits.
+- Separate weekly full re-scan → rejected: spikey load; the continuous sweep spreads the work evenly across hourly runs and reuses the existing cursor pipeline.
+- Recompute counters from event data → rejected: HF exposes no such event stream; the list API is the only source.
+
+
 
 ### Decision 5: Size parsing via tags-first, regex-fallback
 **Choice:** First check tags for `size:<n>b` patterns; if absent, regex the model ID for `-<n>b` and `NxNb` (e.g. `8x7b` → 8×7 = 56.0). Null if unknown.
@@ -91,4 +100,5 @@ The HF API paginates via a `cursor` query parameter (exposed in the `Link: rel="
 - **[Risk] First run has no existing state (404 on fetch)** → Mitigation: `fetch_updates.py` treats 404 as empty state and bootstraps from scratch (backfill-from-newest with cursor set for next run).
 - **[Risk] Backfill cursor lost/corrupted** → Mitigation: `backfill_state.json` is rewritten atomically each run; if lost, backfill restarts from newest (worst case: re-fetches already-known models, deduped by `id` in state).
 - **[Trade-off] Hourly cadence means up to 1hr staleness** → Accepted; near-real-time is a non-goal.
-- **[Trade-off] Backfill takes ~20 hourly runs to complete (~1 day)** → Accepted; incremental pass serves fresh models immediately while history fills in progressively.
+- **[Trade-off] Backfill takes ~20 hourly runs to complete (~1 day)** → Accepted; incremental pass serves fresh models immediately while history fills in progressively. After completion, the same pass continues as a metrics sweep, so no behavior change is needed at cutover.
+- **[Trade-off] Popularity counters up to ~1 day stale** → Accepted; the metrics sweep cycles the full catalog continuously (`--limit`/hour). `metrics_refreshed_at` makes the staleness of any given record visible to the UI.
