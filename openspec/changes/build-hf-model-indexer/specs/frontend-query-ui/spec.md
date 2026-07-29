@@ -1,0 +1,44 @@
+## ADDED Requirements
+
+### Requirement: DuckDB WASM initialization
+The frontend SHALL initialize `@duckdb/duckdb-wasm` from a pinned CDN (JsDelivr) with correct worker instantiation in the browser.
+
+#### Scenario: WASM bootstrap
+- **WHEN** the page loads
+- **THEN** the system SHALL instantiate DuckDB via its worker and expose a connection for querying before any user interaction
+
+#### Scenario: Initialization failure surfaced
+- **WHEN** DuckDB fails to initialize (e.g. CDN unreachable)
+- **THEN** the system SHALL display an error state to the user rather than silently failing
+
+### Requirement: Register Parquet over HTTP Range
+The frontend SHALL register `models.parquet` via HTTP protocol so DuckDB issues Range requests instead of downloading the whole file.
+
+#### Scenario: Register file URL
+- **WHEN** DuckDB is initialized
+- **THEN** the system SHALL call `db.registerFileURL('models.parquet', './models.parquet', DuckDBDataProtocol.HTTP, false)` and create a view `CREATE VIEW models AS SELECT * FROM read_parquet('models.parquet')`
+
+### Requirement: Dark-mode filter UI
+The frontend SHALL render a dark-mode interface with: text search (model ID), min/max size (float), quantization dropdown, a Search button, and a results table.
+
+#### Scenario: Filter inputs present
+- **WHEN** the page renders
+- **THEN** the user SHALL see all filter inputs (text, min size, max size, quantization), a Search button, and an empty results table
+
+### Requirement: Parameterized SQL query construction
+The frontend SHALL build parameterized SQL queries from the active filters.
+
+#### Scenario: Apply filters
+- **WHEN** the user submits filters
+- **THEN** the system SHALL construct SQL (e.g. `SELECT * FROM models WHERE size_b >= ? AND quant = ?`) with bound parameters for non-empty filters only
+
+### Requirement: Results rendering with loading state
+The frontend SHALL render query results into the DOM table and indicate loading while a query is in flight.
+
+#### Scenario: Loading indicator
+- **WHEN** a query is in flight
+- **THEN** the UI SHALL show a loading state and disable the Search button
+
+#### Scenario: Render rows
+- **WHEN** the query returns rows
+- **THEN** the system SHALL render each row into the results table, mapping schema fields to columns
