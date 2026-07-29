@@ -51,15 +51,32 @@ let conn = null;
 async function initDuckDB() {
   setStatus("loading", "Initializing DuckDB WASM\u2026");
 
-  // Worker bundle (pinned CDN version). The blob wrapper lets us spawn the
-  // ESM worker from the CDN URL cleanly.
-  const workerUrl = "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/dist/duckdb-browser-sync.worker.js";
-  const wasmUrl = "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/dist/duckdb.wasm";
+  // Pinned CDN dist. We keep both bundles; selectBundle picks `eh` when
+  // cross-origin isolation (SharedArrayBuffer) is available, else falls back to
+  // `mvp`. GitHub Pages does not set COOP/COEP, so `mvp` (single-threaded) is used.
+  const CDN = "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/dist";
+  const bundle = await duckdb.selectBundle({
+    mvp: {
+      mainModule: `${CDN}/duckdb-mvp.wasm`,
+      mainWorker: `${CDN}/duckdb-browser-mvp.worker.js`,
+    },
+    eh: {
+      mainModule: `${CDN}/duckdb-eh.wasm`,
+      mainWorker: `${CDN}/duckdb-browser-eh.worker.js`,
+    },
+  });
 
-  const worker = new Worker(workerUrl, { type: "module" });
-  const logger = { log: () => {} };
+  // Browsers forbid `new Worker(crossOriginUrl)`. The worker source is CORS-
+  // enabled on jsDelivr, so we fetch it, wrap it in a same-origin blob URL, and
+  // spawn the worker from that blob. (The MVP worker is fully bundled - no
+  // relative imports - so a blob URL is safe.)
+  const workerSrc = await (await fetch(bundle.mainWorker)).text();
+  const blob = new Blob([workerSrc], { type: "application/javascript" });
+  const worker = new Worker(URL.createObjectURL(blob));
+
+  const logger = new duckdb.ConsoleLogger();
   db = new duckdb.AsyncDuckDB(logger, worker);
-  await db.instantiate(wasmUrl);
+  await db.instantiate(bundle.mainModule);
 
   conn = await db.connect();
 
