@@ -5,6 +5,16 @@ on:
     # Run at the top of every hour.
     - cron: '0 * * * *'
   workflow_dispatch:
+    inputs:
+      backfill_limit:
+        description: 'Max models to backfill this run (0 = incremental-only)'
+        required: false
+        default: '50000'
+      no_backfill:
+        description: 'Skip backfill pass entirely'
+        type: boolean
+        required: false
+        default: false
 
 # Allow the job to push (force) to the gh-pages branch.
 permissions:
@@ -35,19 +45,36 @@ jobs:
         run: |
           OWNER="${{ github.repository_owner }}"
           REPO="${GITHUB_REPOSITORY#*/}"
-          PAGES_URL="https://${OWNER}.github.io/${REPO}/models.jsonl.gz"
+          BASE="https://${OWNER}.github.io/${REPO}"
           echo "owner=${OWNER}" >> "$GITHUB_OUTPUT"
           echo "repo=${REPO}" >> "$GITHUB_OUTPUT"
-          echo "url=${PAGES_URL}" >> "$GITHUB_OUTPUT"
-          echo "Resolved Pages URL: ${PAGES_URL}"
+          echo "base=${BASE}" >> "$GITHUB_OUTPUT"
+          echo "Pages base URL: ${BASE}"
+
+      - name: Resolve backfill flags
+        id: flags
+        run: |
+          # Manual dispatch inputs override defaults; scheduled runs use defaults.
+          LIMIT="${{ github.event.inputs.backfill_limit || '50000' }}"
+          NO_BACKFILL="${{ github.event.inputs.no_backfill }}"
+          ARGS="--limit ${LIMIT}"
+          if [ "${NO_BACKFILL}" = "true" ]; then
+            ARGS="${ARGS} --no-backfill"
+          fi
+          echo "args=${ARGS}" >> "$GITHUB_OUTPUT"
+          echo "Fetch flags: ${ARGS}"
 
       - name: Fetch model updates
         env:
           HF_HUB_DISABLE_TELEMETRY: '1'
+          # Optional: set HF_TOKEN secret to raise rate limits. Ignored if empty.
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           python scripts/fetch_updates.py \
-            --pages-url "${{ steps.pages.outputs.url }}" \
-            --output models.jsonl.gz
+            --pages-base "${{ steps.pages.outputs.base }}" \
+            --output models.jsonl.gz \
+            --backfill-output backfill_state.json \
+            ${{ steps.flags.outputs.args }}
 
       - name: Build Parquet
         run: |
@@ -78,8 +105,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-          GH_REPO_OWNER: ${{ github.repository_owner }}
-          GH_REPO_NAME: ${{ steps.pages.outputs.repo }}
         run: |
           set -euo pipefail
           TMP_DIR="$(mktemp -d)"
@@ -88,9 +113,10 @@ jobs:
           # Static frontend.
           cp -r frontend/* "$TMP_DIR/"
 
-          # Generated data.
+          # Generated data (state + derived Parquet + backfill cursor).
           cp models.parquet "$TMP_DIR/"
           cp models.jsonl.gz "$TMP_DIR/"
+          cp backfill_state.json "$TMP_DIR/"
 
           cd "$TMP_DIR"
 

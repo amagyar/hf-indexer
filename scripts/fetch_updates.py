@@ -1,12 +1,29 @@
-"""Fetch and update Hugging Face model metadata into a compressed JSONL state file.
+"""Fetch Hugging Face model metadata into a compressed JSONL state file.
 
-Each run:
-  1. Downloads the current `models.jsonl.gz` from GitHub Pages (cache-busted).
-  2. On 404, bootstraps from an empty state.
-  3. Queries Hugging Face Hub for models modified after the most recent
-     `modified_at` watermark in state (or all models with `--backfill`).
-  4. Parses quantization and parameter size from tags / model id.
-  5. Writes the merged state back to `models.jsonl.gz` (gzip, atomic).
+Strategy
+--------
+Two passes run each invocation:
+
+1. **Incremental pass** (catches new/updated models):
+   - Iterate the Hub from newest (no cursor), sorted by `lastModified` desc.
+   - Stop at the `modified_at` watermark (the newest model already in state).
+   - Naturally bounded - only catches models modified since the last run.
+
+2. **Backfill pass** (catches older historical models, iteratively):
+   - Resume from a persisted pagination `cursor` (the HF API's `Link: rel="next"`
+     cursor, which encodes `lastModified < <timestamp>`).
+   - Fetch up to `--limit` more models this run, then persist the new cursor.
+   - When the API returns no next cursor, backfill is complete and only the
+     incremental pass runs thereafter.
+
+The cursor is stored in `backfill_state.json` alongside `models.jsonl.gz` so each
+run resumes exactly where the last stopped - no re-iteration, no quadratic cost.
+
+Why raw `requests` (not `huggingface_hub`):
+  - `full=false` already returns every schema field (downloads, likes, tags,
+    createdAt, lastModified) - `full=true` adds nothing.
+  - The library's iterator hides the pagination cursor, which we must persist
+    to resume iterative backfill efficiently.
 """
 
 from __future__ import annotations
@@ -22,17 +39,21 @@ import sys
 import tempfile
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import requests
 
 LOG = logging.getLogger("fetch_updates")
 
-# Where the previous state is served from. Override with HF_INDEXER_PAGES_URL.
-DEFAULT_PAGES_URL_TEMPLATE = "https://{owner}.github.io/{repo}/models.jsonl.gz"
+HF_API = "https://huggingface.co/api/models"
+PAGE_SIZE = 1000  # models per API request page
+DEFAULT_BACKFILL_LIMIT = 50_000
 
-# Known quantization formats in priority/identity order.
-KNOWN_QUANTS = ("gguf", "awq", "gptq", "exl2")
+# Where state is served from. Override with --pages-base or --pages-url.
+DEFAULT_PAGES_BASE_TEMPLATE = "https://{owner}.github.io/{repo}"
+
+STATE_FILENAME = "models.jsonl.gz"
+BACKFILL_FILENAME = "backfill_state.json"
 
 # Retry settings for HTTP 429 from the Hugging Face API.
 MAX_RETRIES = 5
@@ -40,175 +61,19 @@ INITIAL_BACKOFF_SECONDS = 2.0
 BACKOFF_MULTIPLIER = 2.0
 BACKOFF_CAP_SECONDS = 60.0
 
+# Known quantization formats.
+KNOWN_QUANTS = ("gguf", "awq", "gptq", "exl2")
 
-# ---------------------------------------------------------------------------
-# Schema
-# ---------------------------------------------------------------------------
-
-# A model record. Keys are the canonical JSONL schema.
+# Canonical JSONL schema order.
 RECORD_KEYS = (
-    "id",
-    "author",
-    "url",
-    "size_b",
-    "quant",
-    "tags",
-    "downloads",
-    "likes",
-    "created_at",
-    "modified_at",
+    "id", "author", "url", "size_b", "quant", "tags",
+    "downloads", "likes", "created_at", "modified_at",
 )
 
 
 # ---------------------------------------------------------------------------
-# State I/O
+# Date helpers
 # ---------------------------------------------------------------------------
-
-
-def load_remote_state(pages_url: str) -> Dict[str, Dict[str, Any]]:
-    """Fetch `models.jsonl.gz` from GitHub Pages with cache-busting.
-
-    Returns an empty dict on HTTP 404 (first-run bootstrap). Raises on other
-    HTTP errors so CI fails loudly.
-    """
-    cache_bust = f"{pages_url}?t={int(time.time())}"
-    LOG.info("Fetching state: %s", cache_bust)
-    resp = requests.get(cache_bust, timeout=60)
-    if resp.status_code == 404:
-        LOG.warning("Remote state returned 404 - bootstrapping from empty state.")
-        return {}
-    resp.raise_for_status()
-
-    state: Dict[str, Dict[str, Any]] = {}
-    with gzip.GzipFile(fileobj=io.BytesIO(resp.content)) as gz:
-        for raw in gz:
-            raw = raw.strip()
-            if not raw:
-                continue
-            record = json.loads(raw)
-            state[record["id"]] = record
-    LOG.info("Loaded %d existing records from remote state.", len(state))
-    return state
-
-
-def write_local_state(state: Dict[str, Dict[str, Any]], path: str) -> None:
-    """Serialize state to `path` as gzip-compressed JSONL atomically."""
-    directory = os.path.dirname(os.path.abspath(path)) or "."
-    fd, tmp_path = tempfile.mkstemp(prefix=".models.", suffix=".jsonl.gz", dir=directory)
-    try:
-        with os.fdopen(fd, "wb") as fh, gzip.GzipFile(fileobj=fh, mode="wb") as gz:
-            for record in state.values():
-                gz.write((json.dumps(record) + "\n").encode("utf-8"))
-        os.replace(tmp_path, path)
-    except Exception:
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-        raise
-    LOG.info("Wrote %d records to %s", len(state), path)
-
-
-# ---------------------------------------------------------------------------
-# Hugging Face API with rate-limit handling
-# ---------------------------------------------------------------------------
-
-
-class RateLimitExhausted(RuntimeError):
-    """Raised when the HTTP 429 retry budget is exhausted."""
-
-
-def _iter_models_retry(api, **list_kwargs) -> Iterable[Any]:
-    """Wrap an `HfApi.list_models` iterator with bounded exponential backoff on 429."""
-    backoff = INITIAL_BACKOFF_SECONDS
-    last_exc: Optional[Exception] = None
-    for attempt in range(MAX_RETRIES):
-        try:
-            yield from api.list_models(**list_kwargs)
-            return
-        except Exception as exc:  # noqa: BLE001 - huggingface_hub surfaces requests errors
-            last_exc = exc
-            status = getattr(getattr(exc, "response", None), "status_code", None)
-            if status != 429:
-                raise
-            sleep = min(backoff, BACKOFF_CAP_SECONDS)
-            LOG.warning("HTTP 429 from HF API (attempt %d/%d). Sleeping %.1fs.",
-                        attempt + 1, MAX_RETRIES, sleep)
-            time.sleep(sleep)
-            backoff *= BACKOFF_MULTIPLIER
-    raise RateLimitExhausted(f"HTTP 429 persisted after {MAX_RETRIES} retries") from last_exc
-
-
-# ---------------------------------------------------------------------------
-# Parsing: quantization & size
-# ---------------------------------------------------------------------------
-
-
-def parse_quant(tags: Iterable[str]) -> str:
-    """Return the first known quantization tag, or 'unknown'."""
-    tag_set = {t.lower() for t in (tags or [])}
-    for q in KNOWN_QUANTS:
-        if q in tag_set:
-            return q
-    return "unknown"
-
-
-# Matches: "7b", "0.5b", "70b" anywhere in the id, optionally prefixed by "-" or "_".
-_SIZE_ID_RE = re.compile(r"(?<![0-9a-zA-Z])(\d+(?:\.\d+)?)\s*[bB]\b", re.IGNORECASE)
-# Matches MoE-style: "8x7b", "2x14b", "8 x 7 b"
-_MOE_RE = re.compile(
-    r"(?<![0-9a-zA-Z])(\d+(?:\.\d+)?)\s*[xX]\s*(\d+(?:\.\d+)?)\s*[bB]\b"
-)
-# Authoritative tag form: "size:7b", "size:0.5b"
-_SIZE_TAG_RE = re.compile(r"^size:(\d+(?:\.\d+)?)b$", re.IGNORECASE)
-
-
-def parse_size(tags: Iterable[str], model_id: str) -> Optional[float]:
-    """Derive parameter size in billions.
-
-    1. Prefer `size:<n>b` tags (authoritative).
-    2. Fall back to MoE pattern `NxNb` in the model id (multiply).
-    3. Fall back to plain `<n>b` in the model id.
-    4. None if nothing matches.
-    """
-    for tag in tags or []:
-        m = _SIZE_TAG_RE.match(tag.strip())
-        if m:
-            return float(m.group(1))
-
-    if model_id:
-        moe = _MOE_RE.search(model_id)
-        if moe:
-            return float(moe.group(1)) * float(moe.group(2))
-        m = _SIZE_ID_RE.search(model_id)
-        if m:
-            return float(m.group(1))
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Model -> record
-# ---------------------------------------------------------------------------
-
-
-def model_to_record(model: Any) -> Dict[str, Any]:
-    """Convert a huggingface_hub model object to our JSONL record dict."""
-    model_id = getattr(model, "id", "") or ""
-    author = model_id.split("/", 1)[0] if "/" in model_id else ""
-    tags = list(getattr(model, "tags", None) or [])
-    last_modified = getattr(model, "lastModified", None)
-    created_at = getattr(model, "createdAt", None) or last_modified
-
-    return {
-        "id": model_id,
-        "author": author,
-        "url": f"https://huggingface.co/{model_id}",
-        "size_b": parse_size(tags, model_id),
-        "quant": parse_quant(tags),
-        "tags": tags,
-        "downloads": int(getattr(model, "downloads", 0) or 0),
-        "likes": int(getattr(model, "likes", 0) or 0),
-        "created_at": _iso_z(created_at),
-        "modified_at": _iso_z(last_modified),
-    }
 
 
 def _iso_z(value: Any) -> Optional[str]:
@@ -240,12 +105,230 @@ def _parse_iso(value: Optional[str]) -> Optional[datetime]:
 
 
 # ---------------------------------------------------------------------------
-# Watermark & fetching
+# Parsing: quantization & size
+# ---------------------------------------------------------------------------
+
+
+def parse_quant(tags: Iterable[str]) -> str:
+    """Return the first known quantization tag, or 'unknown'."""
+    tag_set = {t.lower() for t in (tags or [])}
+    for q in KNOWN_QUANTS:
+        if q in tag_set:
+            return q
+    return "unknown"
+
+
+_SIZE_ID_RE = re.compile(r"(?<![0-9a-zA-Z])(\d+(?:\.\d+)?)\s*[bB]\b")
+_MOE_RE = re.compile(r"(?<![0-9a-zA-Z])(\d+(?:\.\d+)?)\s*[xX]\s*(\d+(?:\.\d+)?)\s*[bB]\b")
+_SIZE_TAG_RE = re.compile(r"^size:(\d+(?:\.\d+)?)b$", re.IGNORECASE)
+
+
+def parse_size(tags: Iterable[str], model_id: str) -> Optional[float]:
+    """Derive parameter size in billions (tags-first, then model id)."""
+    for tag in tags or []:
+        m = _SIZE_TAG_RE.match(tag.strip())
+        if m:
+            return float(m.group(1))
+    if model_id:
+        moe = _MOE_RE.search(model_id)
+        if moe:
+            return float(moe.group(1)) * float(moe.group(2))
+        m = _SIZE_ID_RE.search(model_id)
+        if m:
+            return float(m.group(1))
+    return None
+
+
+def model_to_record(model: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert a raw HF API model dict to our JSONL record dict."""
+    model_id = model.get("id", "") or ""
+    author = model.get("author") or (model_id.split("/", 1)[0] if "/" in model_id else "")
+    tags = list(model.get("tags") or [])
+    last_modified = model.get("lastModified")
+    created_at = model.get("createdAt") or last_modified
+    return {
+        "id": model_id,
+        "author": author,
+        "url": f"https://huggingface.co/{model_id}",
+        "size_b": parse_size(tags, model_id),
+        "quant": parse_quant(tags),
+        "tags": tags,
+        "downloads": int(model.get("downloads") or 0),
+        "likes": int(model.get("likes") or 0),
+        "created_at": _iso_z(created_at),
+        "modified_at": _iso_z(last_modified),
+    }
+
+
+# ---------------------------------------------------------------------------
+# State I/O (models.jsonl.gz + backfill_state.json)
+# ---------------------------------------------------------------------------
+
+
+def _http_get(url: str, timeout: int = 60) -> requests.Response:
+    headers = {}
+    token = os.environ.get("HF_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return requests.get(url, params={"t": int(time.time())}, headers=headers, timeout=timeout)
+
+
+def load_remote_state(base_url: str) -> Dict[str, Dict[str, Any]]:
+    """Fetch `models.jsonl.gz` from <base_url>/. 404 -> empty state (bootstrap)."""
+    url = f"{base_url.rstrip('/')}/{STATE_FILENAME}"
+    LOG.info("Fetching state: %s", url)
+    resp = _http_get(url)
+    if resp.status_code == 404:
+        LOG.warning("Remote state returned 404 - bootstrapping from empty state.")
+        return {}
+    resp.raise_for_status()
+
+    state: Dict[str, Dict[str, Any]] = {}
+    with gzip.GzipFile(fileobj=io.BytesIO(resp.content)) as gz:
+        for raw in gz:
+            raw = raw.strip()
+            if not raw:
+                continue
+            record = json.loads(raw)
+            state[record["id"]] = record
+    LOG.info("Loaded %d existing records from remote state.", len(state))
+    return state
+
+
+def load_remote_backfill(base_url: str) -> Dict[str, Any]:
+    """Fetch `backfill_state.json`. 404 / invalid -> default empty cursor."""
+    url = f"{base_url.rstrip('/')}/{BACKFILL_FILENAME}"
+    LOG.info("Fetching backfill state: %s", url)
+    resp = _http_get(url)
+    if resp.status_code == 404:
+        LOG.warning("No remote backfill state - starting fresh.")
+        return {"cursor": None, "complete": False}
+    resp.raise_for_status()
+    try:
+        data = resp.json()
+    except ValueError:
+        LOG.warning("Malformed backfill_state.json - starting fresh.")
+        return {"cursor": None, "complete": False}
+    return {
+        "cursor": data.get("cursor"),
+        "complete": bool(data.get("complete", False)),
+    }
+
+
+def write_local_state(state: Dict[str, Dict[str, Any]], path: str) -> None:
+    """Serialize state to `path` as gzip-compressed JSONL atomically."""
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    fd, tmp_path = tempfile.mkstemp(prefix=".models.", suffix=".jsonl.gz", dir=directory)
+    try:
+        with os.fdopen(fd, "wb") as fh, gzip.GzipFile(fileobj=fh, mode="wb") as gz:
+            for record in state.values():
+                gz.write((json.dumps(record) + "\n").encode("utf-8"))
+        os.replace(tmp_path, path)
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
+    LOG.info("Wrote %d records to %s", len(state), path)
+
+
+def write_local_backfill(backfill: Dict[str, Any], path: str) -> None:
+    """Write the backfill cursor state atomically as JSON."""
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    fd, tmp_path = tempfile.mkstemp(prefix=".backfill.", suffix=".json", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(backfill, fh, indent=2)
+        os.replace(tmp_path, path)
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
+    LOG.info("Wrote backfill state to %s (complete=%s, cursor=%s)",
+             path, backfill.get("complete"), "set" if backfill.get("cursor") else "none")
+
+
+# ---------------------------------------------------------------------------
+# HF API page fetch (raw HTTP, cursor pagination, 429 retry)
+# ---------------------------------------------------------------------------
+
+
+_NEXT_CURSOR_RE = re.compile(r'<([^>]+)>;\s*rel="next"')
+_CURSOR_PARAM_RE = re.compile(r"[?&]cursor=([^>&]+)")
+
+
+def _extract_next_cursor(link_header: Optional[str]) -> Optional[str]:
+    """Pull the `cursor=...` value out of the `Link: rel="next"` URL."""
+    if not link_header:
+        return None
+    nxt = _NEXT_CURSOR_RE.search(link_header)
+    if not nxt:
+        return None
+    url = nxt.group(1)
+    m = _CURSOR_PARAM_RE.search(url)
+    return m.group(1) if m else None
+
+
+class RateLimitExhausted(RuntimeError):
+    """Raised when the HTTP 429 retry budget is exhausted."""
+
+
+def _hf_get(params: Dict[str, str]) -> requests.Response:
+    headers = {"Accept": "application/json"}
+    token = os.environ.get("HF_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    backoff = INITIAL_BACKOFF_SECONDS
+    last_exc: Optional[Exception] = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            resp = requests.get(HF_API, params=params, headers=headers, timeout=60)
+            if resp.status_code == 429:
+                raise _Retryable429(resp)
+            return resp
+        except _Retryable429 as exc:
+            last_exc = exc
+            sleep = min(backoff, BACKOFF_CAP_SECONDS)
+            LOG.warning("HTTP 429 from HF API (attempt %d/%d). Sleeping %.1fs.",
+                        attempt + 1, MAX_RETRIES, sleep)
+            time.sleep(sleep)
+            backoff *= BACKOFF_MULTIPLIER
+        except requests.RequestException as exc:
+            last_exc = exc
+            sleep = min(backoff, BACKOFF_CAP_SECONDS)
+            LOG.warning("Transient request error (attempt %d/%d): %s. Sleeping %.1fs.",
+                        attempt + 1, MAX_RETRIES, exc, sleep)
+            time.sleep(sleep)
+            backoff *= BACKOFF_MULTIPLIER
+    raise RateLimitExhausted(f"HF API request failed after {MAX_RETRIES} retries") from last_exc
+
+
+class _Retryable429(Exception):
+    def __init__(self, resp: requests.Response) -> None:
+        super().__init__(f"HTTP 429: {resp.text[:200]}")
+        self.response = resp
+
+
+def fetch_hf_page(cursor: Optional[str] = None) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """Fetch one page of models. Returns (models, next_cursor)."""
+    params = {"sort": "lastModified", "full": "false", "limit": str(PAGE_SIZE)}
+    if cursor:
+        params["cursor"] = cursor
+    resp = _hf_get(params)
+    resp.raise_for_status()
+    models = resp.json()
+    if not isinstance(models, list):
+        models = []
+    next_cursor = _extract_next_cursor(resp.headers.get("link"))
+    return models, next_cursor
+
+
+# ---------------------------------------------------------------------------
+# Watermark
 # ---------------------------------------------------------------------------
 
 
 def compute_watermark(state: Dict[str, Dict[str, Any]]) -> Optional[datetime]:
-    """Return the maximum `modified_at` across state, or None if state is empty."""
+    """Return the maximum `modified_at` across state, or None if empty."""
     latest: Optional[datetime] = None
     for record in state.values():
         modified = _parse_iso(record.get("modified_at"))
@@ -256,25 +339,62 @@ def compute_watermark(state: Dict[str, Dict[str, Any]]) -> Optional[datetime]:
     return latest
 
 
-def fetch_new_models(api, watermark: Optional[datetime], backfill: bool) -> List[Any]:
-    """Fetch models from the Hub, stopping at the watermark when not backfilling."""
-    list_kwargs: Dict[str, Any] = {
-        "sort": "lastModified",
-        "direction": -1,
-        "full": bool(backfill),
-    }
-    LOG.info("Listing models (backfill=%s, watermark=%s)", backfill, watermark)
+# ---------------------------------------------------------------------------
+# Passes
+# ---------------------------------------------------------------------------
 
-    results: List[Any] = []
-    for model in _iter_models_retry(api, **list_kwargs):
-        if not backfill and watermark is not None:
-            modified = _parse_iso(_iso_z(getattr(model, "lastModified", None)))
+
+def incremental_pass(watermark: Optional[datetime]) -> List[Dict[str, Any]]:
+    """Fetch new/updated models from newest, stopping at the watermark."""
+    if watermark is None:
+        LOG.info("Incremental pass skipped (no watermark / empty state).")
+        return []
+    LOG.info("Incremental pass: fetching models modified after %s", watermark)
+    collected: List[Dict[str, Any]] = []
+    cursor: Optional[str] = None
+    while True:
+        models, next_cursor = fetch_hf_page(cursor)
+        if not models:
+            break
+        stop = False
+        for m in models:
+            modified = _parse_iso(m.get("lastModified"))
             if modified is not None and modified <= watermark:
-                LOG.info("Reached watermark at model %s - stopping.", getattr(model, "id", "?"))
+                stop = True
                 break
-        results.append(model)
-    LOG.info("Fetched %d model(s) from Hub.", len(results))
-    return results
+            collected.append(m)
+        if stop or not next_cursor:
+            break
+        cursor = next_cursor
+    LOG.info("Incremental pass collected %d new/updated model(s).", len(collected))
+    return collected
+
+
+def backfill_pass(start_cursor: Optional[str], batch_limit: int) -> Tuple[List[Dict[str, Any]], Optional[str], bool]:
+    """Resume backfill from `start_cursor`; fetch up to `batch_limit` models.
+
+    Returns (models, resume_cursor, complete):
+      - resume_cursor: cursor to persist for the next run (None if exhausted).
+      - complete: True if the API returned no next page (full history indexed).
+    """
+    if batch_limit <= 0:
+        LOG.info("Backfill pass disabled (batch_limit <= 0).")
+        return [], start_cursor, False
+    LOG.info("Backfill pass: resuming from cursor=%s, batch_limit=%d",
+             "set" if start_cursor else "newest", batch_limit)
+
+    collected: List[Dict[str, Any]] = []
+    cursor = start_cursor
+    while len(collected) < batch_limit:
+        models, next_cursor = fetch_hf_page(cursor)
+        if not models:
+            return collected, None, True  # exhausted
+        collected.extend(models)
+        if not next_cursor:
+            return collected, None, True  # exhausted - no more pages
+        cursor = next_cursor
+    LOG.info("Backfill pass collected %d model(s); resume cursor set.", len(collected))
+    return collected, cursor, False
 
 
 # ---------------------------------------------------------------------------
@@ -282,18 +402,20 @@ def fetch_new_models(api, watermark: Optional[datetime], backfill: bool) -> List
 # ---------------------------------------------------------------------------
 
 
-def build_pages_url(args: argparse.Namespace) -> str:
+def resolve_base_url(args: argparse.Namespace) -> str:
+    if args.pages_base:
+        return args.pages_base.rstrip("/")
     if args.pages_url:
-        return args.pages_url.rstrip("/")
+        # Tolerate being handed the full models.jsonl.gz URL.
+        return args.pages_url.rsplit("/", 1)[0]
     if args.owner and args.repo:
-        return DEFAULT_PAGES_URL_TEMPLATE.format(owner=args.owner, repo=args.repo)
-    # Fall back to env vars (set by CI).
+        return DEFAULT_PAGES_BASE_TEMPLATE.format(owner=args.owner, repo=args.repo)
     owner = os.environ.get("HF_INDEXER_PAGES_OWNER")
     repo = os.environ.get("HF_INDEXER_PAGES_REPO")
     if owner and repo:
-        return DEFAULT_PAGES_URL_TEMPLATE.format(owner=owner, repo=repo)
+        return DEFAULT_PAGES_BASE_TEMPLATE.format(owner=owner, repo=repo)
     raise SystemExit(
-        "Cannot determine GitHub Pages URL. Pass --owner/--repo, --pages-url, "
+        "Cannot determine GitHub Pages base URL. Pass --owner/--repo, --pages-base, "
         "or set HF_INDEXER_PAGES_OWNER and HF_INDEXER_PAGES_REPO."
     )
 
@@ -304,40 +426,54 @@ def main(argv: Optional[List[str]] = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--owner", help="GitHub repo owner (for default Pages URL).")
-    parser.add_argument("--repo", help="GitHub repo name (for default Pages URL).")
-    parser.add_argument("--pages-url", help="Full URL to remote models.jsonl.gz.")
-    parser.add_argument(
-        "--output",
-        default="models.jsonl.gz",
-        help="Local output path for the updated state (default: models.jsonl.gz).",
-    )
-    parser.add_argument(
-        "--backfill",
-        action="store_true",
-        help="Ignore the watermark and fetch full metadata for all models.",
-    )
+    src = parser.add_argument_group("source (GitHub Pages base)")
+    src.add_argument("--owner", help="GitHub repo owner (for default Pages URL).")
+    src.add_argument("--repo", help="GitHub repo name (for default Pages URL).")
+    src.add_argument("--pages-base", help="Base URL of the GitHub Pages site.")
+    src.add_argument("--pages-url", help="Full URL to remote models.jsonl.gz (base is derived).")
+
+    out = parser.add_argument_group("output")
+    out.add_argument("--output", default=STATE_FILENAME, help="Local models.jsonl.gz path.")
+    out.add_argument("--backfill-output", default=BACKFILL_FILENAME,
+                     help="Local backfill_state.json path.")
+
+    run = parser.add_argument_group("run control")
+    run.add_argument("--limit", type=int, default=DEFAULT_BACKFILL_LIMIT,
+                     help=f"Max models to fetch in the backfill pass this run (default {DEFAULT_BACKFILL_LIMIT}).")
+    run.add_argument("--no-backfill", action="store_true",
+                     help="Skip the backfill pass (incremental updates only).")
     args = parser.parse_args(argv)
 
-    pages_url = build_pages_url(args)
-    state = load_remote_state(pages_url)
+    base_url = resolve_base_url(args)
 
-    from huggingface_hub import HfApi
+    state = load_remote_state(base_url)
+    backfill = load_remote_backfill(base_url)
 
-    api = HfApi()
-    watermark = None if args.backfill else compute_watermark(state)
-    new_models = fetch_new_models(api, watermark, args.backfill)
+    # --- Incremental pass (newest -> watermark) ---
+    watermark = compute_watermark(state)
+    new_models = incremental_pass(watermark)
 
-    updated = 0
-    for model in new_models:
+    # --- Backfill pass (resume from cursor, bounded by --limit) ---
+    resume_cursor = backfill.get("cursor")
+    complete = bool(backfill.get("complete", False))
+    backfill_models: List[Dict[str, Any]] = []
+    if not args.no_backfill and not complete:
+        backfill_models, resume_cursor, complete = backfill_pass(resume_cursor, args.limit)
+
+    # --- Merge into state ---
+    merged = 0
+    for model in [*new_models, *backfill_models]:
         record = model_to_record(model)
         if not record["id"]:
             continue
         state[record["id"]] = record
-        updated += 1
+        merged += 1
 
-    LOG.info("Updated %d record(s). Total state size: %d.", updated, len(state))
+    LOG.info("Merged %d record(s). Total state size: %d.", merged, len(state))
     write_local_state(state, args.output)
+    write_local_backfill({"cursor": resume_cursor, "complete": complete}, args.backfill_output)
+    if complete:
+        LOG.info("Backfill is COMPLETE. Future runs are incremental-only.")
     return 0
 
 

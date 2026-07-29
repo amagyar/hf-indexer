@@ -51,11 +51,26 @@ Stakeholders: developers searching HF models; the GitHub Actions runner that exe
 - Download whole Parquet then query → rejected: slow first load, high bandwidth.
 - Server-side API → rejected: violates serverless/static goal.
 
-### Decision 4: Incremental update via `modified_at` watermark
-**Choice:** Track the most recent `modified_at` timestamp across all known models; each run fetches only models with `lastModified` after the watermark using `api.list_models(sort="lastModified", direction=-1)`. A `--backfill` flag forces a full `full=True` rescan.
-**Rationale:** Avoids re-pulling hundreds of thousands of models hourly; new/updated models bubble to the top of the sort.
+### Decision 4: Two-pass fetch — incremental watermark + iterative cursor backfill
+**Choice:** Each run executes two passes against the HF Hub API (sorted by `lastModified` desc):
+1. **Incremental pass** — iterate from newest (no cursor) and stop at the `modified_at` watermark (newest model already in state). Catches new/updated models since the last run. Naturally bounded.
+2. **Backfill pass** — resume from a **persisted pagination cursor** stored in `backfill_state.json`, fetch up to `--limit` more (older) models, then persist the new cursor. When the API returns no `next` page, backfill is marked complete and only the incremental pass runs thereafter.
+
+The HF API paginates via a `cursor` query parameter (exposed in the `Link: rel="next"` header) that encodes `lastModified < <timestamp>`. Persisting it lets each backfill batch resume exactly where the last stopped — no re-iteration, no quadratic cost. At `--limit 50000` per hourly run, ~1M models backfill in ~20 runs.
+
+**Rationale:** A single full rescan would be too slow/rate-limit-prone for hourly cadence; pure watermark updates would never reach historical models. The two-pass design catches new models immediately *and* progressively completes historical coverage.
+
 **Alternatives considered:**
-- Full rescan every run → rejected: too slow and rate-limit-prone for hourly cadence.
+- Full rescan every run → rejected: too slow for hourly cadence.
+- Capped batches without cursor resume → rejected: re-walks already-fetched models each run (quadratic blowup).
+- HF date-range filters for resume → rejected: empirically the `filter` param returns 0 for `lastModified` ranges; only the opaque cursor works.
+
+### Decision 4b: Raw `requests` instead of `huggingface_hub`
+**Choice:** Hit `https://huggingface.co/api/models` directly with `requests`, managing the pagination cursor ourselves.
+**Rationale:** Two implementation findings forced this: (1) `full=false` already returns every schema field (`downloads`, `likes`, `tags`, `createdAt`, `lastModified`) — `full=true` adds nothing, so the library's backfill mode is moot; (2) `huggingface_hub`'s iterator hides the `cursor`, which we must persist to resume iterative backfill. Raw HTTP also drops a heavy dependency.
+**Alternatives considered:**
+- Keep `huggingface_hub` for incremental, raw HTTP for backfill → rejected: two code paths for the same API; unnecessary complexity.
+
 
 ### Decision 5: Size parsing via tags-first, regex-fallback
 **Choice:** First check tags for `size:<n>b` patterns; if absent, regex the model ID for `-<n>b` and `NxNb` (e.g. `8x7b` → 8×7 = 56.0). Null if unknown.
@@ -63,15 +78,17 @@ Stakeholders: developers searching HF models; the GitHub Actions runner that exe
 **Trade-off:** Regex may mis-classify edge cases; null is the safe fallback rather than guessing.
 
 ### Decision 6: Handle HF rate limits with bounded retry/backoff
-**Choice:** On HTTP 429 from `huggingface_hub`, sleep with exponential backoff (capped attempts) before retrying; fail loudly in CI if the cap is exhausted.
+**Choice:** On HTTP 429 (or transient `requests` errors) from the HF API, sleep with exponential backoff (capped attempts) before retrying; fail loudly in CI if the cap is exhausted.
 **Rationale:** Keeps hourly runs resilient without hiding persistent failures.
 
 ## Risks / Trade-offs
 
 - **[Risk] GitHub Pages 100MB file limit** → Mitigation: gzip JSONL; Parquet zstd is already highly compressed; monitor file size in CI and fail fast if exceeded.
-- **[Risk] HF API rate limiting (429) stalling hourly runs** → Mitigation: bounded exponential backoff; `--backfill` kept off the hourly path; CI step fails loudly rather than silently producing partial data.
+- **[Risk] HF API rate limiting (429) stalling hourly runs** → Mitigation: bounded exponential backoff; backfill batch size capped (`--limit`, default 50k); CI step fails loudly rather than silently producing partial data. Optional `HF_TOKEN` secret raises rate limits.
 - **[Risk] Force-push to `gh-pages` discards history** → Trade-off accepted: Pages data is reproducible from `main` + HF API; history is not valuable and force-push keeps the branch small.
 - **[Risk] DuckDB WASM CDN outage breaks frontend** → Mitigation: pin a specific JsDelivr version; document self-hosting as a fallback.
 - **[Risk] Size regex mis-parses unusual model IDs** → Mitigation: null on uncertainty; parsing is best-effort, not authoritative.
-- **[Risk] First run has no existing state (404 on fetch)** → Mitigation: `fetch_updates.py` treats 404 as empty state and bootstraps from scratch.
+- **[Risk] First run has no existing state (404 on fetch)** → Mitigation: `fetch_updates.py` treats 404 as empty state and bootstraps from scratch (backfill-from-newest with cursor set for next run).
+- **[Risk] Backfill cursor lost/corrupted** → Mitigation: `backfill_state.json` is rewritten atomically each run; if lost, backfill restarts from newest (worst case: re-fetches already-known models, deduped by `id` in state).
 - **[Trade-off] Hourly cadence means up to 1hr staleness** → Accepted; near-real-time is a non-goal.
+- **[Trade-off] Backfill takes ~20 hourly runs to complete (~1 day)** → Accepted; incremental pass serves fresh models immediately while history fills in progressively.

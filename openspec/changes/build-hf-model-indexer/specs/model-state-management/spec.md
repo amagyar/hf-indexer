@@ -16,15 +16,30 @@ The system SHALL fetch Hugging Face model metadata via `huggingface_hub.HfApi` a
 - **THEN** the system SHALL serialize the dict to JSONL and write `models.jsonl.gz` (gzip-compressed) atomically to disk
 
 ### Requirement: Incremental update by modified_at watermark
-The system SHALL avoid rescanning the entire Hub each run by fetching only models whose `lastModified` is strictly after the most recent `modified_at` currently in state.
+The system SHALL avoid rescanning already-known models each run via an incremental pass that iterates from newest (no cursor) and stops at the most recent `modified_at` currently in state.
 
-#### Scenario: Hourly incremental fetch
-- **WHEN** the fetcher runs in default (non-backfill) mode and existing state contains at least one model
-- **THEN** the system SHALL compute the max `modified_at` watermark and call `api.list_models(sort="lastModified", direction=-1)`, stopping once it reaches entries at or before the watermark
+#### Scenario: Hourly incremental pass
+- **WHEN** the fetcher runs and existing state contains at least one model
+- **THEN** the system SHALL compute the max `modified_at` watermark and iterate the Hub sorted by `lastModified` descending, collecting only models modified strictly after the watermark, stopping once it reaches entries at or before the watermark
 
-#### Scenario: Backfill flag forces full rescan
-- **WHEN** the fetcher is invoked with `--backfill`
-- **THEN** the system SHALL fetch all models with `full=True` metadata, ignoring the watermark
+### Requirement: Iterative backfill via persisted pagination cursor
+The system SHALL progressively index older historical models using the HF API's resumable pagination cursor, persisted in `backfill_state.json`, so each run resumes exactly where the last stopped without re-iterating already-fetched models.
+
+#### Scenario: Backfill batch bounded per run
+- **WHEN** the fetcher runs and backfill is not yet complete
+- **THEN** the system SHALL resume from the persisted cursor and fetch up to `--limit` more (older) models, then persist the new cursor for the next run
+
+#### Scenario: Backfill completes
+- **WHEN** a backfill pass consumes a page after which the API returns no `next` cursor
+- **THEN** the system SHALL mark backfill complete in `backfill_state.json` and subsequent runs SHALL perform the incremental pass only
+
+#### Scenario: Backfill disabled for a run
+- **WHEN** the fetcher is invoked with `--no-backfill` (or `--limit 0`)
+- **THEN** the system SHALL skip the backfill pass entirely and run only the incremental pass
+
+#### Scenario: First run with empty state
+- **WHEN** state is empty (remote `models.jsonl.gz` returns 404) and there is no backfill cursor
+- **THEN** the system SHALL skip the incremental pass and run the backfill pass from newest (no cursor), collecting up to `--limit` models and persisting the resulting cursor
 
 ### Requirement: Parse quantization from tags
 The system SHALL derive each model's `quant` field from its tags array.
