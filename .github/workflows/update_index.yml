@@ -1,0 +1,109 @@
+name: Update HF Model Index
+
+on:
+  schedule:
+    # Run at the top of every hour.
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+# Allow the job to push (force) to the gh-pages branch.
+permissions:
+  contents: write
+
+env:
+  PYTHON_VERSION: '3.10'
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: pip install -r scripts/requirements.txt
+
+      - name: Configure Pages URL
+        id: pages
+        run: |
+          OWNER="${{ github.repository_owner }}"
+          REPO="${GITHUB_REPOSITORY#*/}"
+          PAGES_URL="https://${OWNER}.github.io/${REPO}/models.jsonl.gz"
+          echo "owner=${OWNER}" >> "$GITHUB_OUTPUT"
+          echo "repo=${REPO}" >> "$GITHUB_OUTPUT"
+          echo "url=${PAGES_URL}" >> "$GITHUB_OUTPUT"
+          echo "Resolved Pages URL: ${PAGES_URL}"
+
+      - name: Fetch model updates
+        env:
+          HF_HUB_DISABLE_TELEMETRY: '1'
+        run: |
+          python scripts/fetch_updates.py \
+            --pages-url "${{ steps.pages.outputs.url }}" \
+            --output models.jsonl.gz
+
+      - name: Build Parquet
+        run: |
+          python scripts/build_parquet.py \
+            --input models.jsonl.gz \
+            --output models.parquet
+
+      - name: Enforce GitHub per-file size limit (100 MB)
+        run: |
+          LIMIT_MB=100
+          fail=0
+          for f in models.jsonl.gz models.parquet; do
+            if [ ! -f "$f" ]; then
+              echo "ERROR: expected file $f not found"
+              fail=1
+              continue
+            fi
+            size_mb=$(du -m "$f" | cut -f1)
+            echo "$f: ${size_mb} MB (limit ${LIMIT_MB} MB)"
+            if [ "$size_mb" -gt "$LIMIT_MB" ]; then
+              echo "ERROR: $f exceeds the ${LIMIT_MB} MB GitHub Pages per-file limit"
+              fail=1
+            fi
+          done
+          exit $fail
+
+      - name: Deploy to gh-pages
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          GH_REPO_OWNER: ${{ github.repository_owner }}
+          GH_REPO_NAME: ${{ steps.pages.outputs.repo }}
+        run: |
+          set -euo pipefail
+          TMP_DIR="$(mktemp -d)"
+          echo "Assembling site in: $TMP_DIR"
+
+          # Static frontend.
+          cp -r frontend/* "$TMP_DIR/"
+
+          # Generated data.
+          cp models.parquet "$TMP_DIR/"
+          cp models.jsonl.gz "$TMP_DIR/"
+
+          cd "$TMP_DIR"
+
+          # Bootstrap a fresh orphan repo and force-push to gh-pages.
+          git init
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b gh-pages
+          git add -A
+          git commit -m "Deploy index @ $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          git push --force \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git" \
+            gh-pages:gh-pages
+
+          echo "Deployed to gh-pages."

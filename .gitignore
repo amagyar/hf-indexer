@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Generated data state - never commit to main branch
+# These are produced by CI and force-pushed to the gh-pages branch only.
+models.jsonl.gz
+models.parquet
+
+# Misc
+.DS_Store

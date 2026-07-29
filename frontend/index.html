@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Hugging Face Model Indexer</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header>
+    <h1>Hugging Face Model Indexer</h1>
+    <p class="subtitle">Client-side search via DuckDB WASM &middot; HTTP Range reads on Parquet</p>
+  </header>
+
+  <main>
+    <section id="status-banner" class="status loading" role="status" aria-live="polite">
+      <span id="status-text">Initializing DuckDB WASM&hellip;</span>
+    </section>
+
+    <section id="error-banner" class="error hidden" role="alert"></section>
+
+    <form id="filter-form" aria-label="Model filters">
+      <div class="field">
+        <label for="f-id">Model ID</label>
+        <input id="f-id" name="id" type="search" placeholder="e.g. llama, mistral, qwen" autocomplete="off" />
+      </div>
+
+      <div class="field">
+        <label for="f-min-size">Min size (B)</label>
+        <input id="f-min-size" name="min_size" type="number" min="0" step="0.1" placeholder="0" />
+      </div>
+
+      <div class="field">
+        <label for="f-max-size">Max size (B)</label>
+        <input id="f-max-size" name="max_size" type="number" min="0" step="0.1" placeholder="&infin;" />
+      </div>
+
+      <div class="field">
+        <label for="f-quant">Quantization</label>
+        <select id="f-quant" name="quant">
+          <option value="">Any</option>
+          <option value="gguf">gguf</option>
+          <option value="awq">awq</option>
+          <option value="gptq">gptq</option>
+          <option value="exl2">exl2</option>
+          <option value="unknown">unknown</option>
+        </select>
+      </div>
+
+      <div class="field actions">
+        <button id="search-btn" type="submit">Search</button>
+      </div>
+    </form>
+
+    <section class="results-meta">
+      <span id="row-count" aria-live="polite"></span>
+    </section>
+
+    <section class="table-wrap">
+      <table id="results-table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Size (B)</th>
+            <th>Quant</th>
+            <th>Downloads</th>
+            <th>Likes</th>
+            <th>Modified</th>
+          </tr>
+        </thead>
+        <tbody id="results-body">
+          <tr class="empty-row"><td colspan="6">Enter filters and click Search.</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+
+  <!-- DuckDB WASM (pinned JsDelivr CDN). ESM + worker bootstrap in app.js. -->
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
