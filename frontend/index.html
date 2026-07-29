@@ -21,22 +21,23 @@
     <section id="error-banner" class="error hidden" role="alert"></section>
 
     <form id="filter-form" aria-label="Model filters">
-      <div class="field">
+      <div class="field field-id">
         <label for="f-id">Model ID</label>
         <input id="f-id" name="id" type="search" placeholder="e.g. llama, mistral, qwen" autocomplete="off" />
       </div>
 
-      <div class="field">
-        <label for="f-min-size">Min size (B)</label>
-        <input id="f-min-size" name="min_size" type="number" min="0" step="0.1" placeholder="0" />
+      <div class="field-pair">
+        <div class="field">
+          <label for="f-min-size">Min size (B)</label>
+          <input id="f-min-size" name="min_size" type="number" min="0" step="0.1" placeholder="0" />
+        </div>
+        <div class="field">
+          <label for="f-max-size">Max size (B)</label>
+          <input id="f-max-size" name="max_size" type="number" min="0" step="0.1" placeholder="&infin;" />
+        </div>
       </div>
 
-      <div class="field">
-        <label for="f-max-size">Max size (B)</label>
-        <input id="f-max-size" name="max_size" type="number" min="0" step="0.1" placeholder="&infin;" />
-      </div>
-
-      <div class="field">
+      <div class="field field-quant">
         <label for="f-quant">Quantization</label>
         <select id="f-quant" name="quant">
           <option value="">Any</option>
@@ -48,24 +49,26 @@
         </select>
       </div>
 
-      <div class="field">
-        <label for="f-created-from">Created from</label>
-        <input id="f-created-from" name="created_from" type="date" />
+      <div class="field-pair">
+        <div class="field">
+          <label for="f-created-from">Created from</label>
+          <input id="f-created-from" name="created_from" type="date" />
+        </div>
+        <div class="field">
+          <label for="f-created-to">Created to</label>
+          <input id="f-created-to" name="created_to" type="date" />
+        </div>
       </div>
 
-      <div class="field">
-        <label for="f-created-to">Created to</label>
-        <input id="f-created-to" name="created_to" type="date" />
-      </div>
-
-      <div class="field">
-        <label for="f-modified-from">Modified from</label>
-        <input id="f-modified-from" name="modified_from" type="date" />
-      </div>
-
-      <div class="field">
-        <label for="f-modified-to">Modified to</label>
-        <input id="f-modified-to" name="modified_to" type="date" />
+      <div class="field-pair">
+        <div class="field">
+          <label for="f-modified-from">Modified from</label>
+          <input id="f-modified-from" name="modified_from" type="date" />
+        </div>
+        <div class="field">
+          <label for="f-modified-to">Modified to</label>
+          <input id="f-modified-to" name="modified_to" type="date" />
+        </div>
       </div>
 
       <div class="field actions">

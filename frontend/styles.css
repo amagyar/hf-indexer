@@ -90,7 +90,7 @@ main {
 /* Filter form */
 #filter-form {
   display: grid;
-  grid-template-columns: 2fr repeat(7, minmax(110px, 1fr)) auto;
+  grid-template-columns: 2fr 1.4fr 1fr 1.4fr 1.4fr auto;
   gap: 12px;
   align-items: end;
   padding: 16px;
@@ -104,6 +104,19 @@ main {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  min-width: 0;
+}
+
+/* A from/to (or min/max) pair: its own 2-column sub-grid so the two inputs
+   stay side by side at every viewport width. */
+.field-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.field-pair .field label {
+  font-size: 0.6875rem;
 }
 
 .field label {
@@ -196,7 +209,7 @@ tbody td {
 
 tbody tr:last-child td { border-bottom: none; }
 
-tbody tr:hover { background: rgba(88, 166, 255, 0.06); }
+tbody tr:hover td { background: rgba(88, 166, 255, 0.06); }
 
 .empty-row td {
   text-align: center;
@@ -218,8 +231,9 @@ tbody tr:hover { background: rgba(88, 166, 255, 0.06); }
 .cell-date { color: var(--text-muted); font-size: 0.8125rem; }
 
 @media (max-width: 1100px) {
-  #filter-form { grid-template-columns: repeat(2, 1fr); }
-  #filter-form .field:first-child { grid-column: 1 / -1; }
-  #filter-form .actions { grid-column: 1 / -1; }
+  /* Stack the form groups vertically; each from/to pair stays together
+     because .field-pair is a self-contained 2-column sub-grid. */
+  #filter-form { grid-template-columns: 1fr; }
+  .field-pair { grid-template-columns: 1fr 1fr; }
   #search-btn { width: 100%; }
 }
