@@ -81,17 +81,33 @@ async function initDuckDB() {
   conn = await db.connect();
 
   // Register the Parquet via HTTP so DuckDB issues Range requests instead of
-  // downloading the whole file.
-  await db.registerFileURL(
-    "models.parquet",
-    "./models.parquet",
-    duckdb.DuckDBDataProtocol.HTTP,
-    false
-  );
-
-  await conn.query(
-    "CREATE VIEW models AS SELECT * FROM read_parquet('models.parquet')"
-  );
+  // downloading the whole file. We MUST pass an absolute URL: the worker runs
+  // inside a blob, so a relative URL would resolve against the blob URL (broken).
+  const parquetUrl = new URL("models.parquet", document.baseURI).href;
+  try {
+    await db.registerFileURL(
+      "models.parquet",
+      parquetUrl,
+      duckdb.DuckDBDataProtocol.HTTP,
+      false
+    );
+    await conn.query(
+      "CREATE VIEW models AS SELECT * FROM read_parquet('models.parquet')"
+    );
+    console.info("[hf-indexer] Registered models.parquet via HTTP (Range reads).");
+  } catch (httpErr) {
+    // Fallback: fetch the whole file and register it as a buffer. Works in
+    // every bundle at the cost of a one-time full download.
+    console.warn("[hf-indexer] HTTP registration failed, falling back to buffer:", httpErr);
+    const resp = await fetch(parquetUrl);
+    if (!resp.ok) throw new Error(`Failed to fetch models.parquet: HTTP ${resp.status}`);
+    const buffer = new Uint8Array(await resp.arrayBuffer());
+    await db.registerFileBuffer("models.parquet", buffer);
+    await conn.query(
+      "CREATE VIEW models AS SELECT * FROM read_parquet('models.parquet')"
+    );
+    console.info(`[hf-indexer] Registered models.parquet via buffer (${buffer.length} bytes).`);
+  }
 
   setStatus("ready", "Ready. Indexed and queryable.");
 }
