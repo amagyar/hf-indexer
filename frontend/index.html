@@ -48,6 +48,26 @@
         </select>
       </div>
 
+      <div class="field">
+        <label for="f-created-from">Created from</label>
+        <input id="f-created-from" name="created_from" type="date" />
+      </div>
+
+      <div class="field">
+        <label for="f-created-to">Created to</label>
+        <input id="f-created-to" name="created_to" type="date" />
+      </div>
+
+      <div class="field">
+        <label for="f-modified-from">Modified from</label>
+        <input id="f-modified-from" name="modified_from" type="date" />
+      </div>
+
+      <div class="field">
+        <label for="f-modified-to">Modified to</label>
+        <input id="f-modified-to" name="modified_to" type="date" />
+      </div>
+
       <div class="field actions">
         <button id="search-btn" type="submit">Search</button>
       </div>
@@ -66,11 +86,12 @@
             <th>Quant</th>
             <th>Downloads</th>
             <th>Likes</th>
+            <th>Created</th>
             <th>Modified</th>
           </tr>
         </thead>
         <tbody id="results-body">
-          <tr class="empty-row"><td colspan="6">Enter filters and click Search.</td></tr>
+          <tr class="empty-row"><td colspan="7">Enter filters and click Search.</td></tr>
         </tbody>
       </table>
     </section>

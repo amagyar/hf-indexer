@@ -19,6 +19,10 @@ const els = {
   minSize: document.getElementById("f-min-size"),
   maxSize: document.getElementById("f-max-size"),
   quant: document.getElementById("f-quant"),
+  createdFrom: document.getElementById("f-created-from"),
+  createdTo: document.getElementById("f-created-to"),
+  modifiedFrom: document.getElementById("f-modified-from"),
+  modifiedTo: document.getElementById("f-modified-to"),
   rowCount: document.getElementById("row-count"),
   resultsBody: document.getElementById("results-body"),
 };
@@ -149,9 +153,36 @@ function buildQuery() {
     params.push(quantVal);
   }
 
+  // Date-range filters. `type=date` inputs yield YYYY-MM-DD; bound them to the
+  // start (00:00:00Z) or end (23:59:59Z) of that UTC day so a single date is
+  // inclusive of the whole day.
+  const dateFrom = (el) => (el.value ? `${el.value}T00:00:00Z` : null);
+  const dateTo = (el) => (el.value ? `${el.value}T23:59:59Z` : null);
+
+  const createdFromVal = dateFrom(els.createdFrom);
+  if (createdFromVal) {
+    conditions.push("created_at >= ?");
+    params.push(createdFromVal);
+  }
+  const createdToVal = dateTo(els.createdTo);
+  if (createdToVal) {
+    conditions.push("created_at <= ?");
+    params.push(createdToVal);
+  }
+  const modifiedFromVal = dateFrom(els.modifiedFrom);
+  if (modifiedFromVal) {
+    conditions.push("modified_at >= ?");
+    params.push(modifiedFromVal);
+  }
+  const modifiedToVal = dateTo(els.modifiedTo);
+  if (modifiedToVal) {
+    conditions.push("modified_at <= ?");
+    params.push(modifiedToVal);
+  }
+
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
   const sql = `
-    SELECT id, size_b, quant, downloads, likes, modified_at, url
+    SELECT id, size_b, quant, downloads, likes, modified_at, created_at, url
     FROM models
     ${where}
     ORDER BY downloads DESC
@@ -170,7 +201,7 @@ function renderRows(rows) {
     const tr = document.createElement("tr");
     tr.className = "empty-row";
     const td = document.createElement("td");
-    td.colSpan = 6;
+    td.colSpan = 7;
     td.textContent = "No models matched the current filters.";
     tr.appendChild(td);
     els.resultsBody.appendChild(tr);
@@ -215,6 +246,12 @@ function renderRows(rows) {
     tdLikes.textContent = (r.likes ?? 0).toLocaleString();
     tr.appendChild(tdLikes);
 
+    // Created
+    const tdCreated = document.createElement("td");
+    tdCreated.className = "cell-date";
+    tdCreated.textContent = formatDate(r.created_at);
+    tr.appendChild(tdCreated);
+
     // Modified
     const tdMod = document.createElement("td");
     tdMod.className = "cell-date";
@@ -258,6 +295,7 @@ async function runSearch(event) {
       quant: row.quant,
       downloads: row.downloads,
       likes: row.likes,
+      created_at: row.created_at,
       modified_at: row.modified_at,
       url: row.url,
     }));

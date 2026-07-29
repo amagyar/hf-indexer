@@ -90,7 +90,7 @@ main {
 /* Filter form */
 #filter-form {
   display: grid;
-  grid-template-columns: 2fr 1fr 1fr 1fr auto;
+  grid-template-columns: 2fr repeat(7, minmax(110px, 1fr)) auto;
   gap: 12px;
   align-items: end;
   padding: 16px;
@@ -217,7 +217,9 @@ tbody tr:hover { background: rgba(88, 166, 255, 0.06); }
 .cell-quant { font-family: var(--mono); font-size: 0.8125rem; }
 .cell-date { color: var(--text-muted); font-size: 0.8125rem; }
 
-@media (max-width: 720px) {
-  #filter-form { grid-template-columns: 1fr 1fr; }
+@media (max-width: 1100px) {
+  #filter-form { grid-template-columns: repeat(2, 1fr); }
+  #filter-form .field:first-child { grid-column: 1 / -1; }
   #filter-form .actions { grid-column: 1 / -1; }
+  #search-btn { width: 100%; }
 }
