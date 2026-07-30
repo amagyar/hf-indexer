@@ -67,19 +67,23 @@ The system SHALL derive each model's `quant` field from its tags array.
 - **WHEN** none of `gguf`, `awq`, `gptq`, `exl2` appear in the tags
 - **THEN** the system SHALL set `quant` to `"unknown"`
 
-### Requirement: Parse parameter size from tags then model ID
-The system SHALL derive `size_b` (in billions of parameters, as a float) using a tags-first, regex-fallback strategy.
+### Requirement: Parse parameter size from authoritative metadata first, then tags, then model ID
+The system SHALL derive `size_b` (in billions of parameters, as a float) with the following priority: (1) the Hub's authoritative parameter count exposed via the `safetensors.total` or `gguf.total` expansion (`expand=safetensors` + `expand=gguf` on the list endpoint); (2) a `size:<n>b` tag; (3) a regex on the model id (`<n>b`, MoE `NxNb`); (4) null.
 
-#### Scenario: Size tag present
-- **WHEN** a model's tags contain a `size:<n>b` pattern (e.g. `size:7b`)
+#### Scenario: Authoritative parameter count available
+- **WHEN** the Hub returns `safetensors.total` or `gguf.total` for a model
+- **THEN** the system SHALL set `size_b` to `round(total / 1e9, 2)` (this wins over tags and name heuristics)
+
+#### Scenario: Size tag present (no authoritative count)
+- **WHEN** no authoritative count is present but the tags contain a `size:<n>b` pattern (e.g. `size:7b`)
 - **THEN** the system SHALL parse `<n>` and set `size_b` to that float value
 
 #### Scenario: Size inferred from model ID
-- **WHEN** no size tag is present but the model ID matches a pattern like `-<n>b` or `NxNb` (e.g. `8x7b`)
+- **WHEN** neither an authoritative count nor a size tag is present but the model ID matches a pattern like `-<n>b` or `NxNb` (e.g. `8x7b`)
 - **THEN** the system SHALL compute the size (for `NxNb`, multiply N × size; e.g. `8x7b` → `56.0`) and set `size_b`
 
 #### Scenario: Size cannot be determined
-- **WHEN** neither tags nor model ID yield a parseable size
+- **WHEN** none of authoritative count, tags, or model ID yield a parseable size
 - **THEN** the system SHALL set `size_b` to null
 
 ### Requirement: Schema compliance

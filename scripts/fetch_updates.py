@@ -126,8 +126,19 @@ _MOE_RE = re.compile(r"(?<![0-9a-zA-Z])(\d+(?:\.\d+)?)\s*[xX]\s*(\d+(?:\.\d+)?)\
 _SIZE_TAG_RE = re.compile(r"^size:(\d+(?:\.\d+)?)b$", re.IGNORECASE)
 
 
-def parse_size(tags: Iterable[str], model_id: str) -> Optional[float]:
-    """Derive parameter size in billions (tags-first, then model id)."""
+def parse_size(tags: Iterable[str], model_id: str,
+               param_total: Optional[int] = None) -> Optional[float]:
+    """Derive parameter size in billions.
+
+    Priority:
+      1. `param_total` (authoritative parameter count from the Hub's
+         `safetensors.total` or `gguf.total` expansion) - the most accurate.
+      2. A `size:<n>b` tag.
+      3. Regex on the model id (`<n>b`, MoE `NxNb`).
+      4. None if nothing matches.
+    """
+    if param_total:
+        return round(float(param_total) / 1e9, 2)
     for tag in tags or []:
         m = _SIZE_TAG_RE.match(tag.strip())
         if m:
@@ -154,13 +165,18 @@ def model_to_record(model: Dict[str, Any], captured_at: Optional[str] = None) ->
     tags = list(model.get("tags") or [])
     last_modified = model.get("lastModified")
     created_at = model.get("createdAt") or last_modified
+    # Authoritative parameter count (if the Hub exposed it via expand).
+    # safetensors.total / gguf.total are both parameter counts.
+    safetensors = model.get("safetensors") or {}
+    gguf = model.get("gguf") or {}
+    param_total = safetensors.get("total") or gguf.get("total")
     if captured_at is None:
         captured_at = _iso_z(datetime.now(timezone.utc))
     return {
         "id": model_id,
         "author": author,
         "url": f"https://huggingface.co/{model_id}",
-        "size_b": parse_size(tags, model_id),
+        "size_b": parse_size(tags, model_id, param_total),
         "quant": parse_quant(tags),
         "tags": tags,
         "downloads": int(model.get("downloads") or 0),
@@ -320,8 +336,18 @@ class _Retryable429(Exception):
 
 
 def fetch_hf_page(cursor: Optional[str] = None) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-    """Fetch one page of models. Returns (models, next_cursor)."""
-    params = {"sort": "lastModified", "full": "false", "limit": str(PAGE_SIZE)}
+    """Fetch one page of models. Returns (models, next_cursor).
+
+    Requests the `safetensors` and `gguf` expansions so each model carries its
+    authoritative parameter count (`.total`) - the primary source for `size_b`.
+    The two `expand` entries are sent as repeated query params.
+    """
+    params = {
+        "sort": "lastModified",
+        "full": "false",
+        "limit": str(PAGE_SIZE),
+        "expand": ["safetensors", "gguf"],
+    }
     if cursor:
         params["cursor"] = cursor
     resp = _hf_get(params)
