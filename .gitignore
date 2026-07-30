@@ -12,3 +12,10 @@ models.parquet
 
 # Misc
 .DS_Store
+
+# Node / Playwright (E2E tests)
+node_modules/
+/test-results/
+/playwright-report/
+/playwright/.cache/
+/.playwright-mcp/
