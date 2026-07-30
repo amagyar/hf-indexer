@@ -11,13 +11,19 @@
 
 const { test, expect } = require("@playwright/test");
 
+// Navigate to the explicit SITE_URL. Do NOT use page.goto("/") - Playwright
+// resolves a bare "/" against the baseURL ORIGIN, dropping any subpath
+// (e.g. https://user.github.io/hf-indexer/ -> https://user.github.io/).
+const SITE_URL = process.env.SITE_URL || "https://amagyar.github.io/hf-indexer/";
+
 const READY_TIMEOUT = 180_000; // first load fetches ~39MB wasm from CDN
 const QUERY_TIMEOUT = 90_000;
 
 async function waitForReady(page) {
   // domcontentloaded is enough; the explicit Ready wait below covers DuckDB init.
-  // (Using the default "load" can hang waiting on the CDN ESM module graph.)
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.goto(SITE_URL, { waitUntil: "domcontentloaded" });
+  // Fail fast with a clear signal if we landed on the wrong page.
+  await expect(page).toHaveTitle(/Hugging Face Model Indexer/);
   await expect(page.locator("#status-banner")).toHaveClass(/ready/, { timeout: READY_TIMEOUT });
   await expect(page.locator("#error-banner")).toBeHidden();
 }
@@ -49,7 +55,11 @@ async function searchAndExpectSuccess(page) {
 
 test("HF Model Indexer: init + every filter", async ({ page }) => {
   const pageErrors = [];
+  const consoleErrors = [];
   page.on("pageerror", (err) => pageErrors.push(String(err)));
+  page.on("console", (msg) => {
+    if (msg.type() === "error") consoleErrors.push(msg.text());
+  });
 
   await waitForReady(page);
 
@@ -94,6 +104,14 @@ test("HF Model Indexer: init + every filter", async ({ page }) => {
     await searchAndExpectSuccess(page);
   });
 
-  // No uncaught exceptions throughout the whole flow.
+  // Hard-fail on uncaught exceptions only. Console errors are attached to the
+  // report for visibility but don't fail the run - DuckDB/wasm/deps can emit
+  // benign console.error noise (e.g. deprecation notices) that isn't a real bug.
   expect(pageErrors).toEqual([]);
+  if (consoleErrors.length) {
+    test.info().attach("console-errors", {
+      contentType: "text/plain",
+      body: consoleErrors.join("\n"),
+    });
+  }
 });
