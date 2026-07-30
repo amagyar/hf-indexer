@@ -87,10 +87,12 @@ main {
 
 .hidden { display: none !important; }
 
-/* Filter form */
+/* Filter form: 12-col grid -> clean 2-row layout on desktop.
+   Row 1: Model ID | Size pair | Quant | Search
+   Row 2: Created pair | Modified pair                                   */
 #filter-form {
   display: grid;
-  grid-template-columns: 2fr 1.4fr 1fr 1.4fr 1.4fr auto;
+  grid-template-columns: repeat(12, 1fr);
   gap: 12px;
   align-items: end;
   padding: 16px;
@@ -98,6 +100,19 @@ main {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   margin-bottom: 16px;
+}
+.field-id { grid-column: span 4; }
+.pair-size { grid-column: span 3; }
+.field-quant { grid-column: span 2; }
+.pair-created { grid-column: span 6; }
+.pair-modified { grid-column: span 6; }
+.actions {
+  grid-column: span 3;
+  display: flex;
+  flex-direction: row;
+  justify-content: flex-end;
+  align-items: end;
+  align-self: stretch;
 }
 
 .field {
@@ -139,10 +154,6 @@ main {
 .field input:focus, .field select:focus {
   outline: 2px solid var(--accent);
   outline-offset: -1px;
-}
-
-.actions {
-  align-self: stretch;
 }
 
 button#search-btn {
@@ -231,9 +242,11 @@ tbody tr:hover td { background: rgba(88, 166, 255, 0.06); }
 .cell-date { color: var(--text-muted); font-size: 0.8125rem; }
 
 @media (max-width: 1100px) {
-  /* Stack the form groups vertically; each from/to pair stays together
-     because .field-pair is a self-contained 2-column sub-grid. */
+  /* Stack every group full-width; each .field-pair keeps its two inputs
+     side by side (it is a self-contained 2-col sub-grid). */
   #filter-form { grid-template-columns: 1fr; }
-  .field-pair { grid-template-columns: 1fr 1fr; }
+  .field-id, .pair-size, .field-quant,
+  .pair-created, .pair-modified, .actions { grid-column: 1 / -1; }
+  .actions { justify-content: stretch; }
   #search-btn { width: 100%; }
 }
