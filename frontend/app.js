@@ -161,22 +161,22 @@ function buildQuery() {
 
   const createdFromVal = dateFrom(els.createdFrom);
   if (createdFromVal) {
-    conditions.push("created_at >= ?");
+    conditions.push("created_at >= CAST(? AS TIMESTAMPTZ)");
     params.push(createdFromVal);
   }
   const createdToVal = dateTo(els.createdTo);
   if (createdToVal) {
-    conditions.push("created_at <= ?");
+    conditions.push("created_at <= CAST(? AS TIMESTAMPTZ)");
     params.push(createdToVal);
   }
   const modifiedFromVal = dateFrom(els.modifiedFrom);
   if (modifiedFromVal) {
-    conditions.push("modified_at >= ?");
+    conditions.push("modified_at >= CAST(? AS TIMESTAMPTZ)");
     params.push(modifiedFromVal);
   }
   const modifiedToVal = dateTo(els.modifiedTo);
   if (modifiedToVal) {
-    conditions.push("modified_at <= ?");
+    conditions.push("modified_at <= CAST(? AS TIMESTAMPTZ)");
     params.push(modifiedToVal);
   }
 
