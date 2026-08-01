@@ -19,12 +19,15 @@ Two passes run each invocation:
      and are independent of `lastModified`). At `--limit 50000`/hour over ~1M
      models, every record's counters refresh roughly once per day.
 
-The cursor is stored in `backfill_state.json` alongside `models.jsonl.gz` so each
-run resumes exactly where the last stopped - no re-iteration, no quadratic cost.
+The state is sharded across `models-000.jsonl.gz` .. `models-007.jsonl.gz` in
+`backfill_state.json`'s directory so each published file stays under GitHub
+Pages' 100 MB per-file limit; each run resumes exactly where the last stopped -
+no re-iteration, no quadratic cost.
 
 Why raw `requests` (not `huggingface_hub`):
-  - `full=false` already returns every schema field (downloads, likes, tags,
-    createdAt, lastModified) - `full=true` adds nothing.
+  - With the `safetensors` / `gguf` / `tags` / `cardData` expansions, the list
+    endpoint returns every field we need (parameter count, tags, license,
+    downloads, likes, createdAt, lastModified) without the weight of `full=true`.
   - The library's iterator hides the pagination cursor, which we must persist
     to resume iterative backfill efficiently.
 """
@@ -41,6 +44,7 @@ import re
 import sys
 import tempfile
 import time
+import zlib
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -58,18 +62,38 @@ DEFAULT_PAGES_BASE_TEMPLATE = "https://{owner}.github.io/{repo}"
 STATE_FILENAME = "models.jsonl.gz"
 BACKFILL_FILENAME = "backfill_state.json"
 
+# State is sharded across this many gzip-JSONL files to keep each published
+# file under GitHub Pages' 100 MB per-file limit as the catalog grows. Records
+# are distributed by crc32(id) % SHARD_COUNT so each shard is ~total/SHARD_COUNT
+# and a given id always maps to the same shard. 8 shards ~= 13 MB/shard at ~3M
+# models, with headroom for several-fold growth.
+SHARD_COUNT = 8
+SHARD_WIDTH = 3  # zero-padding in shard filenames (models-000.jsonl.gz)
+
 # Retry settings for HTTP 429 from the Hugging Face API.
 MAX_RETRIES = 5
 INITIAL_BACKOFF_SECONDS = 2.0
 BACKOFF_MULTIPLIER = 2.0
 BACKOFF_CAP_SECONDS = 60.0
 
-# Known quantization formats.
-KNOWN_QUANTS = ("gguf", "awq", "gptq", "exl2")
+# Known model / weight formats. The first match in tag order below wins, so
+# the list is ordered by specificity (file-container formats first, then
+# quant methods, then runtime / export formats).
+KNOWN_FORMATS = (
+    "gguf",
+    "awq",
+    "gptq",
+    "exl2",
+    "compressed-tensors",
+    "bitsandbytes",
+    "mlx",
+    "bitnet",
+    "onnx",
+)
 
 # Canonical JSONL schema order.
 RECORD_KEYS = (
-    "id", "author", "url", "size_b", "quant", "tags",
+    "id", "author", "url", "size_b", "format", "license", "tags",
     "downloads", "likes", "created_at", "modified_at", "metrics_refreshed_at",
 )
 
@@ -108,17 +132,52 @@ def _parse_iso(value: Optional[str]) -> Optional[datetime]:
 
 
 # ---------------------------------------------------------------------------
-# Parsing: quantization & size
+# Parsing: format, license & size
 # ---------------------------------------------------------------------------
 
 
-def parse_quant(tags: Iterable[str]) -> str:
-    """Return the first known quantization tag, or 'unknown'."""
+def parse_format(tags: Iterable[str]) -> str:
+    """Return the first known model-format tag, or 'unknown'."""
     tag_set = {t.lower() for t in (tags or [])}
-    for q in KNOWN_QUANTS:
-        if q in tag_set:
-            return q
+    for fmt in KNOWN_FORMATS:
+        if fmt in tag_set:
+            return fmt
     return "unknown"
+
+
+_LICENSE_TAG_RE = re.compile(r"^license:(.+)$", re.IGNORECASE)
+
+
+def parse_license(card_data: Optional[Dict[str, Any]],
+                  tags: Iterable[str]) -> Optional[str]:
+    """Derive the model license from `cardData`, falling back to tags.
+
+    Priority:
+      1. `cardData.license` (structured SPDX id, or a list for multi-licensed
+         models). The placeholder value `"other"` is skipped in favor of (2).
+      2. `cardData.license_name` (the human-readable name authors set when
+         their license is not a standard SPDX id, i.e. `license: other`).
+      3. A `license:<id>` tag.
+      4. None.
+    """
+    if card_data:
+        lic = card_data.get("license")
+        if isinstance(lic, list):
+            parts = [str(x).strip() for x in lic if str(x).strip()]
+            if parts:
+                return ", ".join(parts)
+        elif isinstance(lic, str):
+            lic = lic.strip()
+            if lic and lic.lower() != "other":
+                return lic
+        name = card_data.get("license_name")
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+    for tag in tags or []:
+        m = _LICENSE_TAG_RE.match(tag.strip())
+        if m:
+            return m.group(1).strip()
+    return None
 
 
 _SIZE_ID_RE = re.compile(r"(?<![0-9a-zA-Z])(\d+(?:\.\d+)?)\s*[bB]\b")
@@ -163,6 +222,7 @@ def model_to_record(model: Dict[str, Any], captured_at: Optional[str] = None) ->
     model_id = model.get("id", "") or ""
     author = model.get("author") or (model_id.split("/", 1)[0] if "/" in model_id else "")
     tags = list(model.get("tags") or [])
+    card_data = model.get("cardData") or {}
     last_modified = model.get("lastModified")
     created_at = model.get("createdAt") or last_modified
     # Authoritative parameter count (if the Hub exposed it via expand).
@@ -177,7 +237,8 @@ def model_to_record(model: Dict[str, Any], captured_at: Optional[str] = None) ->
         "author": author,
         "url": f"https://huggingface.co/{model_id}",
         "size_b": parse_size(tags, model_id, param_total),
-        "quant": parse_quant(tags),
+        "format": parse_format(tags),
+        "license": parse_license(card_data, tags),
         "tags": tags,
         "downloads": int(model.get("downloads") or 0),
         "likes": int(model.get("likes") or 0),
@@ -188,8 +249,29 @@ def model_to_record(model: Dict[str, Any], captured_at: Optional[str] = None) ->
 
 
 # ---------------------------------------------------------------------------
-# State I/O (models.jsonl.gz + backfill_state.json)
+# State I/O (sharded models-NNN.jsonl.gz + backfill_state.json)
 # ---------------------------------------------------------------------------
+
+
+def shard_for_id(model_id: str) -> int:
+    """Deterministic shard index for a model id (crc32 -> even, stable hashing)."""
+    return zlib.crc32((model_id or "").encode("utf-8")) % SHARD_COUNT
+
+
+def shard_filename(shard: int) -> str:
+    return f"models-{shard:0{SHARD_WIDTH}d}.jsonl.gz"
+
+
+def _state_prefix(path: str) -> str:
+    """Derive the shard-name prefix from an `--output` path.
+
+    Accepts both a bare prefix (`models`) and a legacy full name
+    (`models.jsonl.gz`); the shard files are written as `<prefix>-NNN.jsonl.gz`.
+    """
+    base = os.path.basename(path)
+    if base.endswith(".jsonl.gz"):
+        base = base[: -len(".jsonl.gz")]
+    return base
 
 
 def _http_get(url: str, timeout: int = 60) -> requests.Response:
@@ -200,25 +282,50 @@ def _http_get(url: str, timeout: int = 60) -> requests.Response:
     return requests.get(url, params={"t": int(time.time())}, headers=headers, timeout=timeout)
 
 
-def load_remote_state(base_url: str) -> Dict[str, Dict[str, Any]]:
-    """Fetch `models.jsonl.gz` from <base_url>/. 404 -> empty state (bootstrap)."""
-    url = f"{base_url.rstrip('/')}/{STATE_FILENAME}"
-    LOG.info("Fetching state: %s", url)
-    resp = _http_get(url)
-    if resp.status_code == 404:
-        LOG.warning("Remote state returned 404 - bootstrapping from empty state.")
-        return {}
-    resp.raise_for_status()
-
-    state: Dict[str, Dict[str, Any]] = {}
-    with gzip.GzipFile(fileobj=io.BytesIO(resp.content)) as gz:
+def _merge_jsonl_gz(state: Dict[str, Dict[str, Any]], content: bytes, label: str) -> int:
+    """Decompress a gzip-JSONL blob and merge its records into `state`. Returns count."""
+    count = 0
+    with gzip.GzipFile(fileobj=io.BytesIO(content)) as gz:
         for raw in gz:
             raw = raw.strip()
             if not raw:
                 continue
             record = json.loads(raw)
             state[record["id"]] = record
-    LOG.info("Loaded %d existing records from remote state.", len(state))
+            count += 1
+    return count
+
+
+def load_remote_state(base_url: str) -> Dict[str, Dict[str, Any]]:
+    """Fetch sharded state (`models-000.jsonl.gz` .. `models-NNN.jsonl.gz`) from
+    `<base_url>/`. Falls back to the legacy single `models.jsonl.gz` for a
+    one-time migration. 404 on everything -> empty state (bootstrap).
+    """
+    base = base_url.rstrip("/")
+    state: Dict[str, Dict[str, Any]] = {}
+    found_shards = 0
+    for shard in range(SHARD_COUNT):
+        url = f"{base}/{shard_filename(shard)}"
+        resp = _http_get(url)
+        if resp.status_code == 404:
+            continue
+        resp.raise_for_status()
+        found_shards += 1
+        _merge_jsonl_gz(state, resp.content, shard_filename(shard))
+    if found_shards:
+        LOG.info("Loaded %d existing records from %d shard(s).", len(state), found_shards)
+        return state
+
+    # Migration fallback: legacy single-file state.
+    legacy_url = f"{base}/{STATE_FILENAME}"
+    LOG.info("No shards found; trying legacy single-file state: %s", legacy_url)
+    resp = _http_get(legacy_url)
+    if resp.status_code == 404:
+        LOG.warning("Remote state returned 404 - bootstrapping from empty state.")
+        return {}
+    resp.raise_for_status()
+    n = _merge_jsonl_gz(state, resp.content, STATE_FILENAME)
+    LOG.info("Loaded %d records from legacy state (will be re-sharded on write).", n)
     return state
 
 
@@ -242,20 +349,37 @@ def load_remote_backfill(base_url: str) -> Dict[str, Any]:
     }
 
 
-def write_local_state(state: Dict[str, Dict[str, Any]], path: str) -> None:
-    """Serialize state to `path` as gzip-compressed JSONL atomically."""
+def write_local_state(state: Dict[str, Dict[str, Any]], path: str) -> List[str]:
+    """Serialize state into `SHARD_COUNT` gzip-compressed JSONL shards, atomically.
+
+    `path` is treated as a prefix: `--output models.jsonl.gz` produces
+    `models-000.jsonl.gz` .. `models-007.jsonl.gz` in the same directory.
+    Returns the list of written shard paths.
+    """
     directory = os.path.dirname(os.path.abspath(path)) or "."
-    fd, tmp_path = tempfile.mkstemp(prefix=".models.", suffix=".jsonl.gz", dir=directory)
-    try:
-        with os.fdopen(fd, "wb") as fh, gzip.GzipFile(fileobj=fh, mode="wb") as gz:
-            for record in state.values():
-                gz.write((json.dumps(record) + "\n").encode("utf-8"))
-        os.replace(tmp_path, path)
-    except Exception:
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-        raise
-    LOG.info("Wrote %d records to %s", len(state), path)
+    prefix = _state_prefix(path)
+    buckets: List[List[Dict[str, Any]]] = [[] for _ in range(SHARD_COUNT)]
+    for record in state.values():
+        buckets[shard_for_id(record.get("id", ""))].append(record)
+    written: List[str] = []
+    for shard, records in enumerate(buckets):
+        shard_name = f"{prefix}-{shard:0{SHARD_WIDTH}d}.jsonl.gz"
+        shard_path = os.path.join(directory, shard_name)
+        fd, tmp_path = tempfile.mkstemp(
+            prefix=f".{shard_name}.", suffix=".tmp", dir=directory
+        )
+        try:
+            with os.fdopen(fd, "wb") as fh, gzip.GzipFile(fileobj=fh, mode="wb") as gz:
+                for record in records:
+                    gz.write((json.dumps(record) + "\n").encode("utf-8"))
+            os.replace(tmp_path, shard_path)
+        except Exception:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            raise
+        written.append(shard_path)
+        LOG.info("Wrote %d records to %s", len(records), shard_path)
+    return written
 
 
 def write_local_backfill(backfill: Dict[str, Any], path: str) -> None:
@@ -340,13 +464,16 @@ def fetch_hf_page(cursor: Optional[str] = None) -> Tuple[List[Dict[str, Any]], O
 
     Requests the `safetensors` and `gguf` expansions so each model carries its
     authoritative parameter count (`.total`) - the primary source for `size_b`.
-    The two `expand` entries are sent as repeated query params.
+    `tags` and `cardData` are also expanded: with `full=false` they are NOT
+    returned by default, so without explicitly requesting them `format` /
+    `license` / `size_b`-from-tags would all silently miss. The four `expand`
+    entries are sent as repeated query params.
     """
     params = {
         "sort": "lastModified",
         "full": "false",
         "limit": str(PAGE_SIZE),
-        "expand": ["safetensors", "gguf"],
+        "expand": ["safetensors", "gguf", "tags", "cardData"],
     }
     if cursor:
         params["cursor"] = cursor
@@ -483,7 +610,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     src.add_argument("--pages-url", help="Full URL to remote models.jsonl.gz (base is derived).")
 
     out = parser.add_argument_group("output")
-    out.add_argument("--output", default=STATE_FILENAME, help="Local models.jsonl.gz path.")
+    out.add_argument("--output", default=STATE_FILENAME,
+                     help="Local state path prefix; sharded into models-NNN.jsonl.gz.")
     out.add_argument("--backfill-output", default=BACKFILL_FILENAME,
                      help="Local backfill_state.json path.")
 

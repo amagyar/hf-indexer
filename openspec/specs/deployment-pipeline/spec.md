@@ -27,7 +27,7 @@ The deploy step SHALL NOT commit data to `main`. It SHALL assemble the site in a
 
 #### Scenario: Assemble site in temp directory
 - **WHEN** the deploy step runs
-- **THEN** the system SHALL create a temporary directory and copy `frontend/*`, `models.parquet`, `models.jsonl.gz`, and `backfill_state.json` into it
+- **THEN** the system SHALL create a temporary directory and copy `frontend/*`, `models.parquet`, the sharded state `models-*.jsonl.gz`, and `backfill_state.json` into it
 
 #### Scenario: Force-push to gh-pages
 - **WHEN** the temp directory is staged
@@ -35,7 +35,7 @@ The deploy step SHALL NOT commit data to `main`. It SHALL assemble the site in a
 
 #### Scenario: main branch stays clean
 - **WHEN** the deploy completes
-- **THEN** the `main` branch SHALL contain no `models.jsonl.gz` or `models.parquet` data files
+- **THEN** the `main` branch SHALL contain no `models-*.jsonl.gz` or `models.parquet` data files
 
 ### Requirement: Permissions for Pages deployment
 The workflow SHALL have sufficient permissions to push to `gh-pages` using the built-in `GITHUB_TOKEN`.
@@ -48,5 +48,5 @@ The workflow SHALL have sufficient permissions to push to `gh-pages` using the b
 The workflow SHALL fail before deploying if any generated data file would exceed GitHub Pages' per-file size limit.
 
 #### Scenario: Size limit enforcement
-- **WHEN** the build produces `models.jsonl.gz` or `models.parquet`
-- **THEN** the workflow SHALL measure each file and fail the job (non-zero exit) if either exceeds 100 MB, otherwise proceed to deploy
+- **WHEN** the build produces the sharded `models-*.jsonl.gz` files or `models.parquet`
+- **THEN** the workflow SHALL measure each file and fail the job (non-zero exit) if any exceeds 100 MB, otherwise proceed to deploy

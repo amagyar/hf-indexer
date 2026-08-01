@@ -6,27 +6,43 @@ Fetch and maintain Hugging Face model metadata as a compressed JSONL state file,
 keeping it current with the Hub while bounding per-run work. Covers state I/O,
 incremental updates by `modified_at` watermark, iterative historical backfill
 via a persisted pagination cursor, continuous popularity-counter refresh
-(metrics sweep), and parsing of quantization / parameter size.
+(metrics sweep), and parsing of model format, license, and parameter size.
 
 ## Requirements
 
-### Requirement: Fetch and persist model metadata as compressed JSONL
+### Requirement: Fetch and persist model metadata as sharded compressed JSONL
 The system SHALL fetch Hugging Face model metadata via the Hub REST API
 (`https://huggingface.co/api/models`) using `requests`, and persist it to disk
-as `models.jsonl.gz` (gzip-compressed JSON Lines), keyed by model `id`, to keep
-file size under GitHub's per-file limit.
+as a set of gzip-compressed JSON Lines shard files (`models-000.jsonl.gz` ..
+`models-NNN.jsonl.gz`), keyed by model `id`, so that each published file stays
+under GitHub's per-file size limit as the catalog grows.
+
+#### Scenario: Sharding by id
+- **WHEN** the system writes a record
+- **THEN** it SHALL place it in shard `crc32(id) % SHARD_COUNT` (default `SHARD_COUNT = 8`), so each shard holds approximately `total / SHARD_COUNT` records and a given id deterministically maps to one shard
 
 #### Scenario: First run with no existing state
-- **WHEN** the fetcher runs and the remote `models.jsonl.gz` returns HTTP 404
+- **WHEN** the fetcher runs and no shard files (and no legacy `models.jsonl.gz`) exist remotely
 - **THEN** the system SHALL initialize an empty state dictionary and bootstrap from the HF API
 
-#### Scenario: Subsequent run with existing state
-- **WHEN** the fetcher runs and a remote `models.jsonl.gz` exists
-- **THEN** the system SHALL download it (with a cache-busting `?t=<timestamp>` query parameter), decompress it in memory, and load entries into a dict keyed by model `id`
+#### Scenario: Migration from legacy single-file state
+- **WHEN** the fetcher runs, no shard files exist remotely, but a legacy `models.jsonl.gz` does
+- **THEN** the system SHALL load it into the state dict and, on write, re-shard it across `SHARD_COUNT` files (one-time migration)
+
+#### Scenario: Subsequent run with existing shards
+- **WHEN** the fetcher runs and one or more shard files exist remotely
+- **THEN** the system SHALL download every shard (with a cache-busting `?t=<timestamp>` query parameter), decompress and merge them in memory into a dict keyed by model `id`
 
 #### Scenario: Write state back to disk
 - **WHEN** new/updated models have been merged into the state dict
-- **THEN** the system SHALL serialize the dict to JSONL and write `models.jsonl.gz` (gzip-compressed) atomically to disk
+- **THEN** the system SHALL bucket records by shard and write each `models-NNN.jsonl.gz` (gzip-compressed) atomically to disk
+
+### Requirement: Request the fields the parser depends on via expansions
+With `full=false`, the Hub list endpoint omits `tags` and `cardData` by default. The system SHALL therefore request the `safetensors`, `gguf`, `tags`, and `cardData` expansions (as repeated `expand` query parameters) on every list request, so that parameter count, model format, license, and tag-based fallbacks are all populated.
+
+#### Scenario: List request carries the required expansions
+- **WHEN** the system calls `GET /api/models`
+- **THEN** the request SHALL include `expand=safetensors`, `expand=gguf`, `expand=tags`, and `expand=cardData`, regardless of `full`
 
 ### Requirement: Incremental update by modified_at watermark
 The system SHALL avoid rescanning already-known models each run via an incremental pass that iterates from newest (no cursor) and stops at the most recent `modified_at` currently in state.
@@ -55,7 +71,7 @@ The system SHALL progressively index older historical models using the HF API's 
 - **THEN** the system SHALL skip the backfill/sweep pass entirely and run only the incremental pass
 
 #### Scenario: First run with empty state
-- **WHEN** state is empty (remote `models.jsonl.gz` returns 404) and there is no backfill cursor
+- **WHEN** state is empty (remote shards and legacy `models.jsonl.gz` all return 404) and there is no backfill cursor
 - **THEN** the system SHALL skip the incremental pass and run the backfill pass from newest (no cursor), collecting up to `--limit` models and persisting the resulting cursor
 
 ### Requirement: Popularity counter freshness
@@ -69,16 +85,39 @@ Because Hugging Face `downloads`/`likes` drift continuously and independently of
 - **WHEN** a model is not visited during a run
 - **THEN** its `metrics_refreshed_at` SHALL remain unchanged, surfacing how stale its counters are
 
-### Requirement: Parse quantization from tags
-The system SHALL derive each model's `quant` field from its tags array.
+### Requirement: Parse model format from tags
+The system SHALL derive each model's `format` field from its tags array, returning the first known format in a fixed priority order: `gguf`, `awq`, `gptq`, `exl2`, `compressed-tensors`, `bitsandbytes`, `mlx`, `bitnet`, `onnx`.
 
-#### Scenario: Known quantization tag present
-- **WHEN** a model's tags include one of `gguf`, `awq`, `gptq`, or `exl2`
-- **THEN** the system SHALL set `quant` to that value
+#### Scenario: Known format tag present
+- **WHEN** a model's tags include one of the known format values above (case-insensitive)
+- **THEN** the system SHALL set `format` to the first matching value in the priority order
 
-#### Scenario: No known quantization tag
-- **WHEN** none of `gguf`, `awq`, `gptq`, `exl2` appear in the tags
-- **THEN** the system SHALL set `quant` to `"unknown"`
+#### Scenario: No known format tag
+- **WHEN** none of the known format values appear in the tags
+- **THEN** the system SHALL set `format` to `"unknown"`
+
+### Requirement: Parse license from cardData, then tags
+The system SHALL derive each model's `license` field from the structured `cardData` metadata, falling back to tags.
+
+#### Scenario: Structured license available
+- **WHEN** `cardData.license` is a non-empty SPDX id (other than the placeholder `"other"`)
+- **THEN** the system SHALL set `license` to that value
+
+#### Scenario: Multi-licensed model
+- **WHEN** `cardData.license` is a list of SPDX ids
+- **THEN** the system SHALL set `license` to a comma-separated join of the non-empty ids (e.g. `"apache-2.0, mit"`)
+
+#### Scenario: Placeholder `other` with a license_name
+- **WHEN** `cardData.license` is `"other"` and `cardData.license_name` is a non-empty string
+- **THEN** the system SHALL set `license` to `cardData.license_name`
+
+#### Scenario: License tag fallback
+- **WHEN** no usable `cardData.license` / `license_name` is present but the tags contain a `license:<id>` entry
+- **THEN** the system SHALL set `license` to `<id>`
+
+#### Scenario: License cannot be determined
+- **WHEN** none of the above yield a license
+- **THEN** the system SHALL set `license` to null
 
 ### Requirement: Parse parameter size from authoritative metadata first, then tags, then model ID
 The system SHALL derive `size_b` (in billions of parameters, as a float) with the following priority: (1) the Hub's authoritative parameter count exposed via the `safetensors.total` or `gguf.total` expansion (`expand=safetensors` + `expand=gguf` on the list endpoint); (2) a `size:<n>b` tag; (3) a regex on the model id (`<n>b`, MoE `NxNb`); (4) null.
@@ -100,10 +139,10 @@ The system SHALL derive `size_b` (in billions of parameters, as a float) with th
 - **THEN** the system SHALL set `size_b` to null
 
 ### Requirement: Schema compliance
-Each JSONL record SHALL conform to the schema: `id`, `author`, `url`, `size_b`, `quant`, `tags`, `downloads`, `likes`, `created_at`, `modified_at`, `metrics_refreshed_at`.
+Each JSONL record SHALL conform to the schema: `id`, `author`, `url`, `size_b`, `format`, `license`, `tags`, `downloads`, `likes`, `created_at`, `modified_at`, `metrics_refreshed_at`. (Legacy records may carry a `quant` key in place of `format`/`license`; the builder SHALL drop `quant` and backfill the canonical columns during Parquet build.)
 
 #### Scenario: Record fields
-- **WHEN** a model record is written to `models.jsonl.gz`
+- **WHEN** a model record is written to a `models-NNN.jsonl.gz` shard
 - **THEN** the record SHALL include all schema fields, with `id` as `"author/model"`, `url` as the full `https://huggingface.co/...` URL, dates as ISO-8601 UTC strings, and numeric fields (`downloads`, `likes`) as integers
 
 ### Requirement: Rate limit handling

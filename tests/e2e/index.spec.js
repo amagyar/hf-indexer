@@ -34,7 +34,8 @@ async function setFilters(page, f) {
   if (f.id) await page.locator("#f-id").fill(f.id);
   if (f.minSize != null) await page.locator("#f-min-size").fill(String(f.minSize));
   if (f.maxSize != null) await page.locator("#f-max-size").fill(String(f.maxSize));
-  if (f.quant) await page.locator("#f-quant").selectOption(f.quant);
+  if (f.format) await page.locator("#f-format").selectOption(f.format);
+  if (f.license) await page.locator("#f-license").fill(f.license);
   if (f.createdFrom) await page.locator("#f-created-from").fill(f.createdFrom);
   if (f.createdTo) await page.locator("#f-created-to").fill(f.createdTo);
   if (f.modifiedFrom) await page.locator("#f-modified-from").fill(f.modifiedFrom);
@@ -79,8 +80,13 @@ test("HF Model Indexer: init + every filter", async ({ page }) => {
     await searchAndExpectSuccess(page);
   });
 
-  await test.step("quantization filter", async () => {
-    await setFilters(page, { quant: "gguf" });
+  await test.step("format filter", async () => {
+    await setFilters(page, { format: "gguf" });
+    await searchAndExpectSuccess(page);
+  });
+
+  await test.step("license filter", async () => {
+    await setFilters(page, { license: "apache" });
     await searchAndExpectSuccess(page);
   });
 
@@ -99,7 +105,7 @@ test("HF Model Indexer: init + every filter", async ({ page }) => {
   await test.step("combined filters", async () => {
     await setFilters(page, {
       id: "llama", minSize: 7, maxSize: 70,
-      createdFrom: "2023-01-01", quant: "gguf",
+      createdFrom: "2023-01-01", format: "gguf",
     });
     await searchAndExpectSuccess(page);
   });

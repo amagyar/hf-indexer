@@ -18,7 +18,8 @@ const els = {
   idInput: document.getElementById("f-id"),
   minSize: document.getElementById("f-min-size"),
   maxSize: document.getElementById("f-max-size"),
-  quant: document.getElementById("f-quant"),
+  format: document.getElementById("f-format"),
+  license: document.getElementById("f-license"),
   createdFrom: document.getElementById("f-created-from"),
   createdTo: document.getElementById("f-created-to"),
   modifiedFrom: document.getElementById("f-modified-from"),
@@ -147,10 +148,16 @@ function buildQuery() {
     }
   }
 
-  const quantVal = els.quant.value;
-  if (quantVal) {
-    conditions.push("quant = ?");
-    params.push(quantVal);
+  const formatVal = els.format.value;
+  if (formatVal) {
+    conditions.push("format = ?");
+    params.push(formatVal);
+  }
+
+  const licenseText = els.license.value.trim();
+  if (licenseText) {
+    conditions.push("license ILIKE ?");
+    params.push(`%${licenseText}%`);
   }
 
   // Date-range filters. `type=date` inputs yield YYYY-MM-DD; bound them to the
@@ -182,7 +189,7 @@ function buildQuery() {
 
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
   const sql = `
-    SELECT id, size_b, quant, downloads, likes, modified_at, created_at, url
+    SELECT id, size_b, format, license, downloads, likes, modified_at, created_at
     FROM models
     ${where}
     ORDER BY downloads DESC
@@ -201,7 +208,7 @@ function renderRows(rows) {
     const tr = document.createElement("tr");
     tr.className = "empty-row";
     const td = document.createElement("td");
-    td.colSpan = 7;
+    td.colSpan = 8;
     td.textContent = "No models matched the current filters.";
     tr.appendChild(td);
     els.resultsBody.appendChild(tr);
@@ -228,11 +235,17 @@ function renderRows(rows) {
     tdSize.textContent = r.size_b == null ? "\u2014" : r.size_b.toFixed(1);
     tr.appendChild(tdSize);
 
-    // Quant
-    const tdQuant = document.createElement("td");
-    tdQuant.className = "cell-quant";
-    tdQuant.textContent = r.quant || "\u2014";
-    tr.appendChild(tdQuant);
+    // Format
+    const tdFormat = document.createElement("td");
+    tdFormat.className = "cell-format";
+    tdFormat.textContent = r.format || "\u2014";
+    tr.appendChild(tdFormat);
+
+    // License
+    const tdLicense = document.createElement("td");
+    tdLicense.className = "cell-license";
+    tdLicense.textContent = r.license || "\u2014";
+    tr.appendChild(tdLicense);
 
     // Downloads
     const tdDl = document.createElement("td");
@@ -292,12 +305,14 @@ async function runSearch(event) {
     const rows = result.toArray().map((row) => ({
       id: row.id,
       size_b: row.size_b,
-      quant: row.quant,
+      format: row.format,
+      license: row.license,
       downloads: row.downloads,
       likes: row.likes,
       created_at: row.created_at,
       modified_at: row.modified_at,
-      url: row.url,
+      // `url` is not stored in the Parquet (trimmed for size); reconstruct it.
+      url: `https://huggingface.co/${row.id}`,
     }));
     renderRows(rows);
     els.rowCount.textContent = `${rows.length} model${rows.length === 1 ? "" : "s"} matched${rows.length >= 500 ? " (capped at 500)" : ""}.`;

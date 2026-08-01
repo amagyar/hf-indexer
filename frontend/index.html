@@ -37,16 +37,26 @@
         </div>
       </div>
 
-      <div class="field field-quant">
-        <label for="f-quant">Quantization</label>
-        <select id="f-quant" name="quant">
+      <div class="field field-format">
+        <label for="f-format">Format</label>
+        <select id="f-format" name="format">
           <option value="">Any</option>
           <option value="gguf">gguf</option>
           <option value="awq">awq</option>
           <option value="gptq">gptq</option>
           <option value="exl2">exl2</option>
+          <option value="compressed-tensors">compressed-tensors</option>
+          <option value="bitsandbytes">bitsandbytes</option>
+          <option value="mlx">mlx</option>
+          <option value="bitnet">bitnet</option>
+          <option value="onnx">onnx</option>
           <option value="unknown">unknown</option>
         </select>
+      </div>
+
+      <div class="field field-license">
+        <label for="f-license">License</label>
+        <input id="f-license" name="license" type="search" placeholder="e.g. apache, mit, llama" autocomplete="off" />
       </div>
 
       <div class="field-pair pair-created">
@@ -86,7 +96,8 @@
           <tr>
             <th>ID</th>
             <th>Size (B)</th>
-            <th>Quant</th>
+            <th>Format</th>
+            <th>License</th>
             <th>Downloads</th>
             <th>Likes</th>
             <th>Created</th>
@@ -94,7 +105,7 @@
           </tr>
         </thead>
         <tbody id="results-body">
-          <tr class="empty-row"><td colspan="7">Enter filters and click Search.</td></tr>
+          <tr class="empty-row"><td colspan="8">Enter filters and click Search.</td></tr>
         </tbody>
       </table>
     </section>

@@ -7,16 +7,20 @@ file optimized for DuckDB WASM HTTP Range reads in the browser.
 
 ## Requirements
 
-### Requirement: Build typed Parquet from JSONL state
-The system SHALL convert `models.jsonl.gz` into `models.parquet` using `pandas` (which reads gzip natively) and the `pyarrow` engine.
+### Requirement: Build typed Parquet from sharded JSONL state
+The system SHALL convert the sharded `models-NNN.jsonl.gz` state into a single `models.parquet` using `pandas` (which reads gzip natively) and the `pyarrow` engine, emitting only the frontend-facing columns (`id`, `size_b`, `format`, `license`, `downloads`, `likes`, `created_at`, `modified_at`).
 
-#### Scenario: Read compressed JSONL
-- **WHEN** the builder runs and `models.jsonl.gz` exists
-- **THEN** the system SHALL load all records into a typed pandas DataFrame
+#### Scenario: Read sharded compressed JSONL
+- **WHEN** the builder runs and one or more `models-NNN.jsonl.gz` shards exist
+- **THEN** the system SHALL load every shard into a typed pandas DataFrame, falling back to the legacy single `models.jsonl.gz` if no shards are present
 
 #### Scenario: Write Parquet
 - **WHEN** the DataFrame has been assembled
 - **THEN** the system SHALL write `models.parquet` using the pyarrow engine with `zstd` compression
+
+#### Scenario: Frontend-only columns
+- **WHEN** the builder assembles the schema
+- **THEN** it SHALL emit only `id`, `size_b`, `format`, `license`, `downloads`, `likes`, `created_at`, `modified_at`; `url`, `author`, `tags`, and `metrics_refreshed_at` are NOT published (the frontend reconstructs `url` from `id`)
 
 ### Requirement: Enforce column types for DuckDB optimization
 The system SHALL assign explicit, DuckDB-friendly types to columns before writing Parquet.
@@ -25,9 +29,24 @@ The system SHALL assign explicit, DuckDB-friendly types to columns before writin
 - **WHEN** the builder assembles the schema
 - **THEN** `size_b` SHALL be `float32`, `downloads` and `likes` SHALL be integers, and `created_at`/`modified_at`/`metrics_refreshed_at` SHALL be timestamps
 
+#### Scenario: String columns
+- **WHEN** the builder assembles the schema
+- **THEN** `id`, `author`, `url`, `format`, and `license` SHALL be UTF-8 strings, and `tags` SHALL be a list of strings
+
+### Requirement: Normalize to a canonical column schema
+The system SHALL emit a stable, canonical column set matching the fetcher's `RECORD_KEYS`, regardless of how many records have been re-swept after a schema change.
+
+#### Scenario: Legacy `quant` column dropped
+- **WHEN** the JSONL contains records carrying a legacy `quant` key (from before the `quant` -> `format` rename)
+- **THEN** the builder SHALL drop the `quant` column during normalization rather than emit it to Parquet
+
+#### Scenario: Missing canonical columns backfilled
+- **WHEN** a canonical column (e.g. `format` or `license`) is absent from some records because they have not yet been re-swept
+- **THEN** the builder SHALL add the column (null for un-swept records) and emit it in the canonical order
+
 ### Requirement: Builder runs after fetch in CI
-The Parquet builder SHALL be invoked only after `fetch_updates.py` has produced a fresh `models.jsonl.gz`.
+The Parquet builder SHALL be invoked only after `fetch_updates.py` has produced a fresh set of sharded `models-NNN.jsonl.gz` files.
 
 #### Scenario: CI ordering
 - **WHEN** the GitHub Actions workflow executes
-- **THEN** the build_parquet step SHALL run after the fetch_updates step and read the freshly written `models.jsonl.gz`
+- **THEN** the build_parquet step SHALL run after the fetch_updates step and read the freshly written `models-NNN.jsonl.gz` shards
