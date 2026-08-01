@@ -19,16 +19,16 @@ The frontend SHALL initialize `@duckdb/duckdb-wasm` from a pinned CDN (JsDelivr)
 - **WHEN** DuckDB fails to initialize (e.g. CDN unreachable)
 - **THEN** the system SHALL display an error state to the user rather than silently failing
 
-### Requirement: Register Parquet over HTTP Range
-The frontend SHALL register `models.parquet` via HTTP protocol so DuckDB issues Range requests instead of downloading the whole file, falling back to a full buffer download if HTTP registration fails.
+### Requirement: Register sharded Parquet over HTTP Range
+The frontend SHALL register each `models-NNN.parquet` shard via HTTP protocol so DuckDB issues Range requests instead of downloading whole files, then create a single view over the list of shards. It SHALL fall back to full buffer downloads if HTTP registration fails.
 
-#### Scenario: Register file URL
+#### Scenario: Register file URLs
 - **WHEN** DuckDB is initialized
-- **THEN** the system SHALL call `db.registerFileURL('models.parquet', <absolute_url>, DuckDBDataProtocol.HTTP, false)` (URL resolved against `document.baseURI`, since the worker runs inside a blob) and create a view `CREATE VIEW models AS SELECT * FROM read_parquet('models.parquet')`
+- **THEN** the system SHALL register every shard via `db.registerFileURL(<name>, <absolute_url>, DuckDBDataProtocol.HTTP, false)` (URL resolved against `document.baseURI`, since the worker runs inside a blob) and create a view `CREATE VIEW models AS SELECT * FROM read_parquet(['models-000.parquet', ...])` with the shard list inlined in the SQL
 
 #### Scenario: Buffer fallback
 - **WHEN** HTTP registration or the view creation fails
-- **THEN** the system SHALL fetch the whole Parquet once and register it via `db.registerFileBuffer`, then create the view
+- **THEN** the system SHALL fetch each shard once and register it via `db.registerFileBuffer`, then create the view over the list
 
 ### Requirement: Dark-mode filter UI
 The frontend SHALL render a dark-mode interface with: text search (model ID), min/max size (float), format dropdown (known formats + `unknown`), license free-text search, `created_at` range (from/to date pickers), `modified_at` range (from/to date pickers), a Search button, and a results table.

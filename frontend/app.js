@@ -85,33 +85,42 @@ async function initDuckDB() {
 
   conn = await db.connect();
 
-  // Register the Parquet via HTTP so DuckDB issues Range requests instead of
-  // downloading the whole file. We MUST pass an absolute URL: the worker runs
-  // inside a blob, so a relative URL would resolve against the blob URL (broken).
-  const parquetUrl = new URL("models.parquet", document.baseURI).href;
+  // The published Parquet is split into N shards (crc32(id) % N) to stay under
+  // GitHub Pages' per-file size limit. We register every shard, then build a
+  // single view over the list - DuckDB reads them as one logical table and
+  // issues Range requests across shards on demand.
+  const PARQUET_SHARDS = 4;
+  const shardNames = Array.from({ length: PARQUET_SHARDS }, (_, i) =>
+    `models-${String(i).padStart(3, "0")}.parquet`);
+  // The file list must be inlined in the SQL (DuckDB binds a single `?` here
+  // as a glob string, not a list); filter values remain parameterized below.
+  const listSql = "[" + shardNames.map((n) => `'${n}'`).join(",") + "]";
+  const createView = () =>
+    conn.query(`CREATE VIEW models AS SELECT * FROM read_parquet(${listSql})`);
+
+  // Register each shard via HTTP so DuckDB issues Range requests instead of
+  // downloading whole files. We MUST pass absolute URLs: the worker runs
+  // inside a blob, so a relative URL would resolve against the blob URL.
   try {
-    await db.registerFileURL(
-      "models.parquet",
-      parquetUrl,
-      duckdb.DuckDBDataProtocol.HTTP,
-      false
-    );
-    await conn.query(
-      "CREATE VIEW models AS SELECT * FROM read_parquet('models.parquet')"
-    );
-    console.info("[hf-indexer] Registered models.parquet via HTTP (Range reads).");
+    for (const name of shardNames) {
+      const url = new URL(name, document.baseURI).href;
+      await db.registerFileURL(name, url, duckdb.DuckDBDataProtocol.HTTP, false);
+    }
+    await createView();
+    console.info(`[hf-indexer] Registered ${PARQUET_SHARDS} parquet shards via HTTP (Range reads).`);
   } catch (httpErr) {
-    // Fallback: fetch the whole file and register it as a buffer. Works in
-    // every bundle at the cost of a one-time full download.
+    // Fallback: fetch each shard fully and register as a buffer. Works in
+    // every bundle at the cost of one-time full downloads.
     console.warn("[hf-indexer] HTTP registration failed, falling back to buffer:", httpErr);
-    const resp = await fetch(parquetUrl);
-    if (!resp.ok) throw new Error(`Failed to fetch models.parquet: HTTP ${resp.status}`);
-    const buffer = new Uint8Array(await resp.arrayBuffer());
-    await db.registerFileBuffer("models.parquet", buffer);
-    await conn.query(
-      "CREATE VIEW models AS SELECT * FROM read_parquet('models.parquet')"
-    );
-    console.info(`[hf-indexer] Registered models.parquet via buffer (${buffer.length} bytes).`);
+    for (const name of shardNames) {
+      const url = new URL(name, document.baseURI).href;
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error(`Failed to fetch ${name}: HTTP ${resp.status}`);
+      const buffer = new Uint8Array(await resp.arrayBuffer());
+      await db.registerFileBuffer(name, buffer);
+    }
+    await createView();
+    console.info(`[hf-indexer] Registered ${PARQUET_SHARDS} parquet shards via buffer.`);
   }
 
   setStatus("ready", "Ready. Indexed and queryable.");

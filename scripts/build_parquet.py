@@ -1,9 +1,10 @@
-"""Build a typed, zstd-compressed Parquet file from the sharded JSONL state.
+"""Build typed, zstd-compressed Parquet shards from the sharded JSONL state.
 
 Reads the gzip-compressed JSONL shards produced by `fetch_updates.py`
 (`models-000.jsonl.gz` .. `models-NNN.jsonl.gz`), emits only the frontend-facing
-columns, coerces each to a DuckDB-friendly type, and writes `models.parquet`
-using the pyarrow engine with zstd compression.
+columns, coerces each to a DuckDB-friendly type, and writes sharded
+`models-NNN.parquet` (by crc32(id) % N) using the pyarrow engine with zstd
+compression.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import glob
 import logging
 import os
 import sys
+import zlib
 from typing import List, Optional
 
 import pandas as pd
@@ -40,6 +42,13 @@ PARQUET_COLUMNS = (
     "id", "size_b", "format", "license",
     "downloads", "likes", "created_at", "modified_at",
 )
+
+# The published Parquet is itself sharded (by crc32(id) % PARQUET_SHARD_COUNT)
+# so each file stays under GitHub Pages' 100 MB per-file limit as the catalog
+# grows. Fewer shards than the JSONL state on purpose: the browser fans out a
+# range request per shard per query, so we keep this small to bound latency.
+PARQUET_SHARD_COUNT = 4
+PARQUET_SHARD_WIDTH = 3
 
 # Explicit column dtypes for DuckDB / Parquet optimization.
 NUMERIC_INT_COLS = ("downloads", "likes")
@@ -130,17 +139,46 @@ def to_arrow_schema(df: pd.DataFrame) -> pa.Table:
     return pa.Table.from_pandas(df, schema=schema, preserve_index=False)
 
 
-def build_parquet(jsonl_path: str, parquet_path: str) -> None:
+def parquet_shard_for_id(model_id) -> int:
+    """Deterministic shard index for a model id (mirrors the JSONL sharding)."""
+    return zlib.crc32(str(model_id or "").encode("utf-8")) % PARQUET_SHARD_COUNT
+
+
+def _parquet_prefix(path: str) -> str:
+    """Derive the shard-name prefix from an `--output` path.
+
+    Accepts both a bare prefix (`models`) and a legacy full name
+    (`models.parquet`); shards are written as `<prefix>-NNN.parquet`.
+    """
+    base = os.path.basename(path)
+    if base.endswith(".parquet"):
+        base = base[: -len(".parquet")]
+    return base
+
+
+def build_parquet(jsonl_path: str, parquet_path: str) -> List[str]:
     df = load_dataframe(jsonl_path)
     # Trim to the frontend-facing columns (url/author/tags/metrics_refreshed_at
     # stay only in the JSONL state).
     df = df[list(PARQUET_COLUMNS)]
     df = coerce_types(df)
-    table = to_arrow_schema(df)
-    LOG.info("Writing %s (zstd compression).", parquet_path)
-    pq.write_table(table, parquet_path, compression="zstd")
-    size_mb = os.path.getsize(parquet_path) / (1024 * 1024)
-    LOG.info("Wrote %s (%.2f MB).", parquet_path, size_mb)
+
+    directory = os.path.dirname(os.path.abspath(parquet_path)) or "."
+    prefix = _parquet_prefix(parquet_path)
+    # Bucket rows by shard so each output file is a self-contained slice.
+    df = df.assign(__shard=df["id"].map(parquet_shard_for_id))
+
+    LOG.info("Writing %d parquet shards (zstd compression).", PARQUET_SHARD_COUNT)
+    written: List[str] = []
+    for shard in range(PARQUET_SHARD_COUNT):
+        sub = df[df["__shard"] == shard].drop(columns=["__shard"])
+        shard_path = os.path.join(directory, f"{prefix}-{shard:0{PARQUET_SHARD_WIDTH}d}.parquet")
+        table = to_arrow_schema(sub)
+        pq.write_table(table, shard_path, compression="zstd")
+        size_mb = os.path.getsize(shard_path) / (1024 * 1024)
+        LOG.info("Wrote %s (%d rows, %.2f MB).", os.path.basename(shard_path), len(sub), size_mb)
+        written.append(shard_path)
+    return written
 
 
 def main(argv: Optional[list] = None) -> int:
@@ -150,7 +188,8 @@ def main(argv: Optional[list] = None) -> int:
     )
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", default="models.jsonl.gz", help="Input JSONL.gz path.")
-    parser.add_argument("--output", default="models.parquet", help="Output Parquet path.")
+    parser.add_argument("--output", default="models.parquet",
+                        help="Output Parquet path prefix; sharded into models-NNN.parquet.")
     args = parser.parse_args(argv)
     build_parquet(args.input, args.output)
     return 0

@@ -7,16 +7,16 @@ file optimized for DuckDB WASM HTTP Range reads in the browser.
 
 ## Requirements
 
-### Requirement: Build typed Parquet from sharded JSONL state
-The system SHALL convert the sharded `models-NNN.jsonl.gz` state into a single `models.parquet` using `pandas` (which reads gzip natively) and the `pyarrow` engine, emitting only the frontend-facing columns (`id`, `size_b`, `format`, `license`, `downloads`, `likes`, `created_at`, `modified_at`).
+### Requirement: Build typed Parquet shards from sharded JSONL state
+The system SHALL convert the sharded `models-NNN.jsonl.gz` state into a set of `models-NNN.parquet` shards using `pandas` (which reads gzip natively) and the `pyarrow` engine, emitting only the frontend-facing columns (`id`, `size_b`, `format`, `license`, `downloads`, `likes`, `created_at`, `modified_at`). Parquet shards are distributed by `crc32(id) % PARQUET_SHARD_COUNT` (default `4`) so each published file stays under GitHub Pages' per-file size limit.
 
 #### Scenario: Read sharded compressed JSONL
 - **WHEN** the builder runs and one or more `models-NNN.jsonl.gz` shards exist
 - **THEN** the system SHALL load every shard into a typed pandas DataFrame, falling back to the legacy single `models.jsonl.gz` if no shards are present
 
-#### Scenario: Write Parquet
+#### Scenario: Write Parquet shards
 - **WHEN** the DataFrame has been assembled
-- **THEN** the system SHALL write `models.parquet` using the pyarrow engine with `zstd` compression
+- **THEN** the system SHALL bucket rows by `crc32(id) % PARQUET_SHARD_COUNT` and write each `models-NNN.parquet` (zstd compression)
 
 #### Scenario: Frontend-only columns
 - **WHEN** the builder assembles the schema
@@ -49,4 +49,4 @@ The Parquet builder SHALL be invoked only after `fetch_updates.py` has produced 
 
 #### Scenario: CI ordering
 - **WHEN** the GitHub Actions workflow executes
-- **THEN** the build_parquet step SHALL run after the fetch_updates step and read the freshly written `models-NNN.jsonl.gz` shards
+- **THEN** the build_parquet step SHALL run after the fetch_updates step, read the freshly written `models-NNN.jsonl.gz` shards, and emit `models-NNN.parquet` shards

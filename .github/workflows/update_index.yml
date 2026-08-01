@@ -86,7 +86,7 @@ jobs:
         run: |
           LIMIT_MB=100
           fail=0
-          for f in models-*.jsonl.gz models.parquet; do
+          for f in models-*.jsonl.gz models-*.parquet; do
             [ -e "$f" ] || { echo "ERROR: expected file $f not found"; fail=1; continue; }
             size_mb=$(du -m "$f" | cut -f1)
             echo "$f: ${size_mb} MB (limit ${LIMIT_MB} MB)"
@@ -110,7 +110,7 @@ jobs:
           cp -r frontend/* "$TMP_DIR/"
 
           # Generated data (state + derived Parquet + backfill cursor).
-          cp models.parquet "$TMP_DIR/"
+          cp models-*.parquet "$TMP_DIR/"
           cp models-*.jsonl.gz "$TMP_DIR/"
           cp backfill_state.json "$TMP_DIR/"
 
