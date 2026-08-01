@@ -25,11 +25,10 @@ Pages' 100 MB per-file limit; each run resumes exactly where the last stopped -
 no re-iteration, no quadratic cost.
 
 Why raw `requests` (not `huggingface_hub`):
-  - With the `safetensors` / `gguf` / `tags` / `cardData` expansions, the list
-    endpoint returns every field we need (parameter count, tags, license,
-    downloads, likes, createdAt, lastModified) without the weight of `full=true`.
-  - The library's iterator hides the pagination cursor, which we must persist
-    to resume iterative backfill efficiently.
+  - The list endpoint drops base fields (`downloads`/`likes`/`createdAt`/`tags`)
+    whenever `expand` is set, so we issue two calls per page (base + expansions)
+    and merge by id. The library's iterator hides both the cursor and this quirk.
+  - We must persist the pagination cursor to resume iterative backfill efficiently.
 """
 
 from __future__ import annotations
@@ -462,28 +461,65 @@ class _Retryable429(Exception):
 def fetch_hf_page(cursor: Optional[str] = None) -> Tuple[List[Dict[str, Any]], Optional[str]]:
     """Fetch one page of models. Returns (models, next_cursor).
 
-    Requests the `safetensors` and `gguf` expansions so each model carries its
-    authoritative parameter count (`.total`) - the primary source for `size_b`.
-    `tags` and `cardData` are also expanded: with `full=false` they are NOT
-    returned by default, so without explicitly requesting them `format` /
-    `license` / `size_b`-from-tags would all silently miss. The four `expand`
-    entries are sent as repeated query params.
+    The HF list API has a painful quirk: specifying ANY `expand` makes it
+    return ONLY `{_id, id, <sort field>}` plus the expansions, DROPPING the
+    base fields (`downloads`, `likes`, `createdAt`, `author`, even `tags`).
+    But we need both - the base fields for the metrics/dates and the
+    `safetensors.total` / `gguf.total` expansions for authoritative `size_b`,
+    plus `cardData` for `license`. (Note: `tags` is already part of the
+    default response and does NOT need expanding.)
+
+    So we issue two requests for the same page (identical sort + cursor) and
+    merge by id: base fields from the no-expand call, expansions from the
+    expand call. This doubles request volume vs a single call, but it is the
+    only way to obtain both field sets from the list endpoint.
     """
-    params = {
+    base_params: Dict[str, Any] = {
         "sort": "lastModified",
         "full": "false",
         "limit": str(PAGE_SIZE),
-        "expand": ["safetensors", "gguf", "tags", "cardData"],
+    }
+    expand_params: Dict[str, Any] = {
+        "sort": "lastModified",
+        "full": "false",
+        "limit": str(PAGE_SIZE),
+        "expand": ["safetensors", "gguf", "cardData"],
     }
     if cursor:
-        params["cursor"] = cursor
-    resp = _hf_get(params)
-    resp.raise_for_status()
-    models = resp.json()
-    if not isinstance(models, list):
-        models = []
-    next_cursor = _extract_next_cursor(resp.headers.get("link"))
-    return models, next_cursor
+        base_params["cursor"] = cursor
+        expand_params["cursor"] = cursor
+
+    base_resp = _hf_get(base_params)
+    base_resp.raise_for_status()
+    base_models = base_resp.json()
+    if not isinstance(base_models, list):
+        base_models = []
+    next_cursor = _extract_next_cursor(base_resp.headers.get("link"))
+    if not base_models:
+        return [], next_cursor
+
+    # Second request for the expansions on the same page; merge by id.
+    expand_resp = _hf_get(expand_params)
+    expand_resp.raise_for_status()
+    expand_models = expand_resp.json()
+    expand_by_id = {
+        m.get("id"): m for m in expand_models
+        if isinstance(m, dict) and m.get("id")
+    }
+    missing = 0
+    for m in base_models:
+        e = expand_by_id.get(m.get("id"))
+        if not e:
+            missing += 1
+            continue
+        m["safetensors"] = e.get("safetensors")
+        m["gguf"] = e.get("gguf")
+        m["cardData"] = e.get("cardData")
+    if missing:
+        LOG.warning("Expansions missing for %d/%d models on this page "
+                    "(catalog shifted between requests); their size_b will "
+                    "fall back to heuristics.", missing, len(base_models))
+    return base_models, next_cursor
 
 
 # ---------------------------------------------------------------------------

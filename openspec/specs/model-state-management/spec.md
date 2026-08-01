@@ -37,12 +37,20 @@ under GitHub's per-file size limit as the catalog grows.
 - **WHEN** new/updated models have been merged into the state dict
 - **THEN** the system SHALL bucket records by shard and write each `models-NNN.jsonl.gz` (gzip-compressed) atomically to disk
 
-### Requirement: Request the fields the parser depends on via expansions
-With `full=false`, the Hub list endpoint omits `tags` and `cardData` by default. The system SHALL therefore request the `safetensors`, `gguf`, `tags`, and `cardData` expansions (as repeated `expand` query parameters) on every list request, so that parameter count, model format, license, and tag-based fallbacks are all populated.
+### Requirement: Fetch base fields and expansions via two merged requests
+The HF list endpoint drops base fields (`downloads`, `likes`, `createdAt`, `author`, `tags`) whenever ANY `expand` is specified, returning only `{_id, id, <sort field>}` plus the expansions. Since the system needs both the base fields and the `safetensors` / `gguf` / `cardData` expansions (for authoritative `size_b` and structured `license`), it SHALL issue two requests for the same page (identical sort + cursor) and merge them by id: base fields from the no-expand call, expansions from the expand call. `tags` is part of the default response and is NOT expanded.
 
-#### Scenario: List request carries the required expansions
-- **WHEN** the system calls `GET /api/models`
-- **THEN** the request SHALL include `expand=safetensors`, `expand=gguf`, `expand=tags`, and `expand=cardData`, regardless of `full`
+#### Scenario: Base fields come from the no-expand request
+- **WHEN** the system fetches a page
+- **THEN** it SHALL issue a no-expand request (`full=false`, `sort=lastModified`, `limit`, optional `cursor`) carrying `downloads`, `likes`, `createdAt`, `lastModified`, `author`, and `tags`
+
+#### Scenario: Expansions come from a second request and are merged by id
+- **WHEN** the base page is fetched
+- **THEN** the system SHALL issue a second request with the same sort/cursor/limit plus `expand=safetensors` + `expand=gguf` + `expand=cardData`, and merge `safetensors` / `gguf` / `cardData` into each base record by id
+
+#### Scenario: Catalog shift between the two requests
+- **WHEN** a model appears in the base page but not in the expansions page (the catalog shifted between calls)
+- **THEN** the system SHALL leave that record's expansions unset (so `size_b` falls back to tag/regex heuristics) and log a warning
 
 ### Requirement: Incremental update by modified_at watermark
 The system SHALL avoid rescanning already-known models each run via an incremental pass that iterates from newest (no cursor) and stops at the most recent `modified_at` currently in state.
