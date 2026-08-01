@@ -3,14 +3,51 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Hugging Face Model Indexer</title>
+  <title>Hugging Face Model Indexer — Search and Filter 3M Models by Size, Format, License</title>
+  <meta name="description" content="Search and filter every Hugging Face model (around 3 million) by parameter size, format (GGUF, AWQ, GPTQ, MLX, ONNX), license, downloads and date. Free, fast, in-browser." />
+  <meta name="robots" content="index, follow" />
+  <meta name="author" content="amagyar" />
+  <link rel="canonical" href="https://amagyar.github.io/hf-indexer/" />
+
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Hugging Face Model Indexer" />
+  <meta property="og:title" content="Hugging Face Model Indexer — Search and Filter 3M Models" />
+  <meta property="og:description" content="Search and filter around 3 million Hugging Face models by size, format, license, downloads and date. Free, fast, in-browser." />
+  <meta property="og:url" content="https://amagyar.github.io/hf-indexer/" />
+
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="Hugging Face Model Indexer — Search and Filter 3M Models" />
+  <meta name="twitter:description" content="Search and filter around 3 million Hugging Face models by size, format, license, downloads and date." />
+
   <link rel="icon" href="data:," />
   <link rel="stylesheet" href="./styles.css" />
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebApplication",
+    "name": "Hugging Face Model Indexer",
+    "url": "https://amagyar.github.io/hf-indexer/",
+    "description": "Search and filter every public model on the Hugging Face Hub (around 3 million) by parameter size, weight format, license, downloads, and date. Runs entirely in the browser.",
+    "applicationCategory": "SearchApplication",
+    "operatingSystem": "Web browser",
+    "browserRequirements": "Requires JavaScript",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+    "featureList": [
+      "Search models by parameter size (in billions)",
+      "Filter by weight format: GGUF, AWQ, GPTQ, EXL2, MLX, BitNet, ONNX",
+      "Filter by license (Apache-2.0, MIT, Llama, and more)",
+      "Sort results by downloads and likes",
+      "Filter by created and modified date"
+    ]
+  }
+  </script>
 </head>
 <body>
   <header>
     <h1>Hugging Face Model Indexer</h1>
-    <p class="subtitle">Client-side search via DuckDB WASM &middot; HTTP Range reads on Parquet</p>
+    <p class="subtitle">Search and filter every model on the Hugging Face Hub by size, format, license, and date — right in your browser.</p>
+    <p class="sr-only">A free, client-side search engine for the Hugging Face Hub. Browse and filter around three million models — transformers, safetensors, GGUF, AWQ, GPTQ, compressed-tensors, bitsandbytes, MLX, BitNet, and ONNX — by parameter count, weight format, license (Apache-2.0, MIT, Llama, and more), downloads, and created or modified date. Queries run locally in your browser via DuckDB WebAssembly over Parquet; there is no backend and no tracking. Use it to find small models for local inference, filter by open license, or discover the most downloaded open-source large language models.</p>
   </header>
 
   <main>
