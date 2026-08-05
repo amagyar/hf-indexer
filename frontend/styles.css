@@ -114,9 +114,9 @@ main {
   border-radius: var(--radius);
   margin-bottom: 16px;
 }
-.field-id { grid-column: span 4; }
+.field-id { grid-column: span 3; }
 .pair-size { grid-column: span 3; }
-.field-format { grid-column: span 2; }
+.field-format { grid-column: span 3; }
 .field-license { grid-column: span 3; }
 .pair-created { grid-column: span 6; }
 .pair-modified { grid-column: span 6; }

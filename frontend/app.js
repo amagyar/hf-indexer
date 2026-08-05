@@ -157,10 +157,10 @@ function buildQuery() {
     }
   }
 
-  const formatVal = els.format.value;
-  if (formatVal) {
-    conditions.push("format = ?");
-    params.push(formatVal);
+  const formatText = els.format.value.trim();
+  if (formatText) {
+    conditions.push("format ILIKE ?");
+    params.push(`%${formatText}%`);
   }
 
   const licenseText = els.license.value.trim();

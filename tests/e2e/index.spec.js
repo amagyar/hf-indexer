@@ -34,7 +34,7 @@ async function setFilters(page, f) {
   if (f.id) await page.locator("#f-id").fill(f.id);
   if (f.minSize != null) await page.locator("#f-min-size").fill(String(f.minSize));
   if (f.maxSize != null) await page.locator("#f-max-size").fill(String(f.maxSize));
-  if (f.format) await page.locator("#f-format").selectOption(f.format);
+  if (f.format) await page.locator("#f-format").fill(f.format);
   if (f.license) await page.locator("#f-license").fill(f.license);
   if (f.createdFrom) await page.locator("#f-created-from").fill(f.createdFrom);
   if (f.createdTo) await page.locator("#f-created-to").fill(f.createdTo);

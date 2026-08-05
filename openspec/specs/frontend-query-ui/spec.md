@@ -31,7 +31,7 @@ The frontend SHALL register each `models-NNN.parquet` shard via HTTP protocol so
 - **THEN** the system SHALL fetch each shard once and register it via `db.registerFileBuffer`, then create the view over the list
 
 ### Requirement: Dark-mode filter UI
-The frontend SHALL render a dark-mode interface with: text search (model ID), min/max size (float), format dropdown (known formats + `unknown`), license free-text search, `created_at` range (from/to date pickers), `modified_at` range (from/to date pickers), a Search button, and a results table.
+The frontend SHALL render a dark-mode interface with: text search (model ID), min/max size (float), format free-text search (with a `<datalist>` of common suggestions), license free-text search, `created_at` range (from/to date pickers), `modified_at` range (from/to date pickers), a Search button, and a results table.
 
 #### Scenario: Filter inputs present
 - **WHEN** the page renders
@@ -42,7 +42,7 @@ The frontend SHALL build parameterized SQL queries from the active filters.
 
 #### Scenario: Apply filters
 - **WHEN** the user submits filters
-- **THEN** the system SHALL construct SQL (e.g. `SELECT * FROM models WHERE size_b >= ? AND format = ?`), with `format` matched by equality and `license` matched case-insensitively by substring (`license ILIKE ?`), using bound parameters for non-empty filters only
+- **THEN** the system SHALL construct SQL (e.g. `SELECT * FROM models WHERE size_b >= ? AND format ILIKE ?`), with both `format` and `license` matched case-insensitively by substring (`ILIKE ?`), using bound parameters for non-empty filters only
 
 #### Scenario: Date-range filters are inclusive of the whole day
 - **WHEN** the user supplies a `created_at` or `modified_at` from/to date

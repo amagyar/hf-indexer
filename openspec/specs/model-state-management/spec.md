@@ -94,11 +94,15 @@ Because Hugging Face `downloads`/`likes` drift continuously and independently of
 - **THEN** its `metrics_refreshed_at` SHALL remain unchanged, surfacing how stale its counters are
 
 ### Requirement: Parse model format from tags
-The system SHALL derive each model's `format` field from its tags array, returning the first known format in a fixed priority order: `gguf`, `awq`, `gptq`, `exl2`, `compressed-tensors`, `bitsandbytes`, `mlx`, `bitnet`, `onnx`.
+The system SHALL derive each model's `format` field from its tags array, returning the first known format in a fixed priority order. The set covers quantization methods / file containers (`gguf`, `awq`, `gptq`, `exl2`, `compressed-tensors`, `bitsandbytes`, `aqlm`, `hqq`, `quanto`, `bitnet`), standalone runtimes (`mlx`, `onnx`, `coreml`, `openvino`, `tflite`, `litert`, `executorch`), and finally `safetensors` as the common default. Pure frameworks (`transformers`/`pytorch`/`jax`/...) are excluded — they describe the library, not the weight format.
 
 #### Scenario: Known format tag present
-- **WHEN** a model's tags include one of the known format values above (case-insensitive)
-- **THEN** the system SHALL set `format` to the first matching value in the priority order
+- **WHEN** a model's tags include one of the known format values (case-insensitive)
+- **THEN** the system SHALL set `format` to the first matching value in the priority order (e.g. a model tagged both `onnx` and `safetensors` resolves to `onnx`)
+
+#### Scenario: Default safetensors model
+- **WHEN** a model's tags include `safetensors` and no higher-priority format
+- **THEN** the system SHALL set `format` to `"safetensors"`
 
 #### Scenario: No known format tag
 - **WHEN** none of the known format values appear in the tags

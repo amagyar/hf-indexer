@@ -75,19 +75,34 @@ INITIAL_BACKOFF_SECONDS = 2.0
 BACKOFF_MULTIPLIER = 2.0
 BACKOFF_CAP_SECONDS = 60.0
 
-# Known model / weight formats. The first match in tag order below wins, so
-# the list is ordered by specificity (file-container formats first, then
-# quant methods, then runtime / export formats).
+# Known weight / runtime formats. The first match in tag order below wins, so
+# the list is ordered by specificity: quant methods and file containers first
+# (a model is genuinely "a GPTQ model"), then deployment runtimes, then the
+# generic safetensors default last (so it only wins when nothing more specific
+# applies). Pure frameworks (transformers/pytorch/jax/...) are intentionally
+# excluded - they describe the library, not the weight format.
 KNOWN_FORMATS = (
+    # Quantization methods / file containers
     "gguf",
     "awq",
     "gptq",
     "exl2",
     "compressed-tensors",
     "bitsandbytes",
-    "mlx",
+    "aqlm",
+    "hqq",
+    "quanto",
     "bitnet",
+    # Standalone runtimes / deployment formats
+    "mlx",
     "onnx",
+    "coreml",
+    "openvino",
+    "tflite",
+    "litert",
+    "executorch",
+    # Base weight format - the common default; lowest priority
+    "safetensors",
 )
 
 # Canonical JSONL schema order.
