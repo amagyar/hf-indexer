@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Hugging Face Model Indexer — Search and Filter 3M Models by Size, Format, License</title>
+  <meta name="description" content="Search and filter every Hugging Face model (around 3 million) by parameter size, format (GGUF, AWQ, GPTQ, MLX, ONNX), license, downloads and date. Free, fast, in-browser." />
+  <meta name="robots" content="index, follow" />
+  <meta name="author" content="amagyar" />
+  <link rel="canonical" href="https://amagyar.github.io/hf-indexer/" />
+
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Hugging Face Model Indexer" />
+  <meta property="og:title" content="Hugging Face Model Indexer — Search and Filter 3M Models" />
+  <meta property="og:description" content="Search and filter around 3 million Hugging Face models by size, format, license, downloads and date. Free, fast, in-browser." />
+  <meta property="og:url" content="https://amagyar.github.io/hf-indexer/" />
+
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="Hugging Face Model Indexer — Search and Filter 3M Models" />
+  <meta name="twitter:description" content="Search and filter around 3 million Hugging Face models by size, format, license, downloads and date." />
+
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="./styles.css" />
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebApplication",
+    "name": "Hugging Face Model Indexer",
+    "url": "https://amagyar.github.io/hf-indexer/",
+    "description": "Search and filter every public model on the Hugging Face Hub (around 3 million) by parameter size, weight format, license, downloads, and date. Runs entirely in the browser.",
+    "applicationCategory": "SearchApplication",
+    "operatingSystem": "Web browser",
+    "browserRequirements": "Requires JavaScript",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+    "featureList": [
+      "Search models by parameter size (in billions)",
+      "Filter by weight format: GGUF, AWQ, GPTQ, EXL2, MLX, BitNet, ONNX",
+      "Filter by license (Apache-2.0, MIT, Llama, and more)",
+      "Sort results by downloads and likes",
+      "Filter by created and modified date"
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header>
+    <h1>Hugging Face Model Indexer</h1>
+    <p class="subtitle">Search and filter every model on the Hugging Face Hub by size, format, license, and date — right in your browser.</p>
+    <p class="sr-only">A free, client-side search engine for the Hugging Face Hub. Browse and filter around three million models — transformers, safetensors, GGUF, AWQ, GPTQ, compressed-tensors, bitsandbytes, MLX, BitNet, and ONNX — by parameter count, weight format, license (Apache-2.0, MIT, Llama, and more), downloads, and created or modified date. Queries run locally in your browser via DuckDB WebAssembly over Parquet; there is no backend and no tracking. Use it to find small models for local inference, filter by open license, or discover the most downloaded open-source large language models.</p>
+  </header>
+
+  <main>
+    <section id="status-banner" class="status loading" role="status" aria-live="polite">
+      <span id="status-text">Initializing DuckDB WASM&hellip;</span>
+    </section>
+
+    <section id="error-banner" class="error hidden" role="alert"></section>
+
+    <form id="filter-form" aria-label="Model filters">
+      <div class="field field-id">
+        <label for="f-id">Model ID</label>
+        <input id="f-id" name="id" type="search" placeholder="e.g. llama, mistral, qwen" autocomplete="off" />
+      </div>
+
+      <div class="field-pair pair-size">
+        <div class="field">
+          <label for="f-min-size">Min size (B)</label>
+          <input id="f-min-size" name="min_size" type="number" min="0" step="0.1" placeholder="0" />
+        </div>
+        <div class="field">
+          <label for="f-max-size">Max size (B)</label>
+          <input id="f-max-size" name="max_size" type="number" min="0" step="0.1" placeholder="&infin;" />
+        </div>
+      </div>
+
+      <div class="field field-format">
+        <label for="f-format">Format</label>
+        <input id="f-format" name="format" list="format-options" type="search"
+               placeholder="e.g. gguf, safetensors, mlx" autocomplete="off" />
+        <datalist id="format-options">
+          <option value="gguf"></option>
+          <option value="awq"></option>
+          <option value="gptq"></option>
+          <option value="exl2"></option>
+          <option value="compressed-tensors"></option>
+          <option value="bitsandbytes"></option>
+          <option value="mlx"></option>
+          <option value="onnx"></option>
+          <option value="bitnet"></option>
+          <option value="safetensors"></option>
+        </datalist>
+      </div>
+
+      <div class="field field-license">
+        <label for="f-license">License</label>
+        <input id="f-license" name="license" type="search" placeholder="e.g. apache, mit, llama" autocomplete="off" />
+      </div>
+
+      <div class="field-pair pair-created">
+        <div class="field">
+          <label for="f-created-from">Created from</label>
+          <input id="f-created-from" name="created_from" type="date" />
+        </div>
+        <div class="field">
+          <label for="f-created-to">Created to</label>
+          <input id="f-created-to" name="created_to" type="date" />
+        </div>
+      </div>
+
+      <div class="field-pair pair-modified">
+        <div class="field">
+          <label for="f-modified-from">Modified from</label>
+          <input id="f-modified-from" name="modified_from" type="date" />
+        </div>
+        <div class="field">
+          <label for="f-modified-to">Modified to</label>
+          <input id="f-modified-to" name="modified_to" type="date" />
+        </div>
+      </div>
+
+      <div class="field actions">
+        <button id="search-btn" type="submit">Search</button>
+      </div>
+    </form>
+
+    <section class="results-meta">
+      <span id="row-count" aria-live="polite"></span>
+    </section>
+
+    <section class="table-wrap">
+      <table id="results-table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Size (B)</th>
+            <th>Format</th>
+            <th>License</th>
+            <th>Downloads</th>
+            <th>Likes</th>
+            <th>Created</th>
+            <th>Modified</th>
+          </tr>
+        </thead>
+        <tbody id="results-body">
+          <tr class="empty-row"><td colspan="8">Enter filters and click Search.</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+
+  <!-- DuckDB WASM (pinned JsDelivr CDN). ESM + worker bootstrap in app.js. -->
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
