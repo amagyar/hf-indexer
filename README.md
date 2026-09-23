@@ -45,13 +45,13 @@ your machine.
 - ⭐ **Sorted by downloads** — most popular models first (top 500 per query).
 - ⚡ **Private & static** — no server, no database, no tracking. The whole thing
   is served from GitHub Pages.
-- 🔄 **Hourly refresh** — the catalog is re-fetched from the Hub every hour via
+- 🔄 **Fresh data** — the catalog is re-fetched from the Hub every 3 hours via
   GitHub Actions.
 
 ## How it works
 
 ```
-Hourly GitHub Actions job
+Every-3-hours GitHub Actions job
    │  fetch_updates.py  →  huggingface.co/api/models  (paginated, 2 reqs/page)
    │  build_parquet.py  →  sharded, zstd-compressed Parquet
    ▼
@@ -76,7 +76,7 @@ is documented in [ARCHITECTURE.md](ARCHITECTURE.md).
 - **Python** — `requests`, `pandas`, `pyarrow` for fetching and building.
 - **DuckDB-WASM** — the in-browser SQL engine that queries the Parquet.
 - **Vanilla HTML / CSS / JS** — no framework, no build step.
-- **GitHub Actions + Pages** — hourly CI and free static hosting.
+- **GitHub Actions + Pages** — scheduled CI and free static hosting.
 
 ## Run it locally
 
@@ -109,7 +109,7 @@ SITE_URL=http://localhost:8000 npm test
 ```
 scripts/        Python: fetch_updates.py (Hub fetcher) + build_parquet.py
 frontend/       Static DuckDB-WASM app (index.html, app.js, styles.css)
-.github/        Hourly Actions workflow (fetch → build → deploy to gh-pages)
+.github/        Scheduled Actions workflow (fetch → build → deploy to gh-pages)
 tests/e2e/      Playwright suite against the live frontend
 openspec/       Specifications (model-state-management, parquet-build, …)
 ARCHITECTURE.md Full system design and key decisions

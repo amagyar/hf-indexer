@@ -2,14 +2,15 @@ name: Update HF Model Index
 
 on:
   schedule:
-    # Run at the top of every hour.
-    - cron: '0 * * * *'
+    # Run every 3 hours (GitHub cron is best-effort; missed runs self-heal
+    # via the incremental watermark + backfill cursor).
+    - cron: '0 */3 * * *'
   workflow_dispatch:
     inputs:
       backfill_limit:
         description: 'Max models to backfill this run (0 = incremental-only)'
         required: false
-        default: '50000'
+        default: '150000'
       no_backfill:
         description: 'Skip backfill pass entirely'
         type: boolean
@@ -22,6 +23,12 @@ permissions:
 
 env:
   PYTHON_VERSION: '3.10'
+
+# Queue runs instead of overlapping: a slow sweep must never double-fetch
+# the same cursor alongside the next scheduled run.
+concurrency:
+  group: update-index
+  cancel-in-progress: false
 
 jobs:
   update:
@@ -55,7 +62,7 @@ jobs:
         id: flags
         run: |
           # Manual dispatch inputs override defaults; scheduled runs use defaults.
-          LIMIT="${{ github.event.inputs.backfill_limit || '50000' }}"
+          LIMIT="${{ github.event.inputs.backfill_limit || '150000' }}"
           NO_BACKFILL="${{ github.event.inputs.no_backfill }}"
           ARGS="--limit ${LIMIT}"
           if [ "${NO_BACKFILL}" = "true" ]; then

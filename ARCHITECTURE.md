@@ -1,13 +1,13 @@
 # Architecture
 
-A static, fully client-side index of Hugging Face models. An hourly GitHub
+A static, fully client-side index of Hugging Face models. A scheduled GitHub
 Actions job fetches model metadata from the Hub, stores it as sharded
 gzip-JSONL, builds sharded Parquet, and deploys everything to GitHub Pages. The
 browser loads DuckDB-WASM and queries the Parquet directly over HTTP Range
 reads — there is no backend.
 
 ```
-                       GitHub Actions (hourly cron + workflow_dispatch)
+                       GitHub Actions (3-hour cron + workflow_dispatch)
                        ┌──────────────────────────────────────────────┐
                        │  fetch_updates.py                            │
   huggingface.co  ───► │   incremental pass (newest → watermark)      │ ──► models-000..007.jsonl.gz
@@ -46,10 +46,10 @@ invocation (`fetch_updates.py:526` `main`):
   watermark). Catches new/updated models only.
 - **Backfill / metrics-sweep pass** — resumes from a persisted pagination
   `cursor` (`backfill_state.json`), fetching up to `--limit` (default
-  `50_000`) older models per run. When the API returns no next cursor,
+  `150_000`) older models per run. When the API returns no next cursor,
   backfill is marked `complete` and the cursor resets to newest; the pass then
   cycles indefinitely as a **metrics sweep**, refreshing `downloads`/`likes`
-  (which drift continuously, independent of `lastModified`). At 50k/hour over
+  (which drift continuously, independent of `lastModified`). At 150k/3h over
   ~3M models, every record refreshes roughly once per day.
 
 **The two-request merge (`fetch_updates.py:462` `fetch_hf_page`).** The HF list
@@ -102,7 +102,7 @@ Static HTML/JS, no framework. `app.js`:
 
 ### 4. CI — `.github/workflows/update_index.yml`
 
-Hourly `cron: '0 * * * *'` plus `workflow_dispatch`. Checks out `main`, installs
+Every-3-hours `cron: '0 */3 * * *'` plus `workflow_dispatch`. Checks out `main`, installs
 deps, runs fetch → build → size guard → deploy. The size guard fails the job if
 any `models-*.jsonl.gz` or `models-*.parquet` exceeds 100 MB. Deploy assembles
 the site in a throwaway temp dir and force-pushes a fresh orphan repo to
