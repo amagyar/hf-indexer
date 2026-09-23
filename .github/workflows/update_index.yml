@@ -106,8 +106,10 @@ jobs:
           TMP_DIR="$(mktemp -d)"
           echo "Assembling site in: $TMP_DIR"
 
-          # Static frontend.
-          cp -r frontend/* "$TMP_DIR/"
+          # Static frontend (include dotfiles such as .nojekyll if present).
+          cp -r frontend/. "$TMP_DIR/"
+          # Bypass Jekyll so large static assets (parquet/jsonl) are served as-is.
+          touch "$TMP_DIR/.nojekyll"
 
           # Generated data (state + derived Parquet + backfill cursor).
           cp models-*.parquet "$TMP_DIR/"
