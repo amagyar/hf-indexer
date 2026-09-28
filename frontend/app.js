@@ -13,6 +13,7 @@ const els = {
   statusBanner: document.getElementById("status-banner"),
   statusText: document.getElementById("status-text"),
   errorBanner: document.getElementById("error-banner"),
+  themeToggle: document.getElementById("theme-toggle"),
   form: document.getElementById("filter-form"),
   searchBtn: document.getElementById("search-btn"),
   idInput: document.getElementById("f-id"),
@@ -27,6 +28,47 @@ const els = {
   rowCount: document.getElementById("row-count"),
   resultsBody: document.getElementById("results-body"),
 };
+
+// ---------------------------------------------------------------------------
+// Theme toggle (dark default, persisted in localStorage)
+// ---------------------------------------------------------------------------
+const THEME_KEY = "hf-indexer-theme";
+
+function applyTheme(theme) {
+  const next = theme === "light" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  if (els.themeToggle) {
+    els.themeToggle.setAttribute("aria-pressed", String(next === "light"));
+    els.themeToggle.setAttribute(
+      "aria-label",
+      next === "light" ? "Switch to dark mode" : "Switch to light mode"
+    );
+  }
+  return next;
+}
+
+function initTheme() {
+  let stored = null;
+  try {
+    stored = localStorage.getItem(THEME_KEY);
+  } catch {
+    stored = null;
+  }
+  applyTheme(stored === "light" ? "light" : "dark");
+
+  if (els.themeToggle) {
+    els.themeToggle.addEventListener("click", () => {
+      const current = document.documentElement.dataset.theme === "light" ? "light" : "dark";
+      const next = current === "light" ? "dark" : "light";
+      applyTheme(next);
+      try {
+        localStorage.setItem(THEME_KEY, next);
+      } catch {
+        // Storage unavailable (e.g. private mode) - theme still applies.
+      }
+    });
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Status / error helpers
@@ -337,6 +379,7 @@ async function runSearch(event) {
 // ---------------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------------
+initTheme();
 els.form.addEventListener("submit", runSearch);
 
 initDuckDB().catch((err) => {
