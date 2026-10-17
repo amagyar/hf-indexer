@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark light" />
+  <title>Hugging Face Model Indexer - Search Hugging Face Models</title>
+  <meta name="description" content="Search and filter every Hugging Face model (around 3 million) by parameter size, format (GGUF, AWQ, GPTQ, MLX, ONNX), license, downloads and date. Free, fast, in-browser." />
+  <meta name="robots" content="index, follow" />
+  <meta name="author" content="amagyar" />
+  <link rel="canonical" href="https://amagyar.github.io/hf-indexer/" />
+
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Hugging Face Model Indexer" />
+  <meta property="og:title" content="Hugging Face Model Indexer - Search Hugging Face Models" />
+  <meta property="og:description" content="Search and filter around 3 million Hugging Face models by size, format, license, downloads and date. Free, fast, in-browser." />
+  <meta property="og:url" content="https://amagyar.github.io/hf-indexer/" />
+  <meta property="og:image" content="https://amagyar.github.io/hf-indexer/icon.svg" />
+
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="Hugging Face Model Indexer - Search Hugging Face Models" />
+  <meta name="twitter:description" content="Search and filter around 3 million Hugging Face models by size, format, license, downloads and date." />
+  <meta name="twitter:image" content="https://amagyar.github.io/hf-indexer/icon.svg" />
+
+  <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+  <script>
+    // Apply stored theme before styles load to avoid a flash of the wrong theme.
+    // Defaults to dark when nothing is stored.
+    try {
+      var stored = localStorage.getItem("hf-indexer-theme");
+      document.documentElement.dataset.theme = stored === "light" ? "light" : "dark";
+    } catch (e) {
+      document.documentElement.dataset.theme = "dark";
+    }
+  </script>
+  <link rel="stylesheet" href="./styles.css" />
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebApplication",
+    "name": "Hugging Face Model Indexer",
+    "url": "https://amagyar.github.io/hf-indexer/",
+    "description": "Search and filter every public model on the Hugging Face Hub (around 3 million) by parameter size, weight format, license, downloads, and date. Runs entirely in the browser.",
+    "applicationCategory": "SearchApplication",
+    "operatingSystem": "Web browser",
+    "browserRequirements": "Requires JavaScript",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+    "featureList": [
+      "Search models by parameter size (in billions)",
+      "Filter by weight format: GGUF, AWQ, GPTQ, EXL2, MLX, BitNet, ONNX",
+      "Filter by license (Apache-2.0, MIT, Llama, and more)",
+      "Sort results by downloads and likes",
+      "Filter by created and modified date"
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "How do I find GGUF models by size?",
+        "acceptedAnswer": { "@type": "Answer", "text": "Enter gguf in Format and set Min/Max size in billions (e.g. 7 to 13), then Search. Results sort by downloads." }
+      },
+      {
+        "@type": "Question",
+        "name": "How do I filter by license?",
+        "acceptedAnswer": { "@type": "Answer", "text": "Enter apache, mit, or llama in License. The index matches SPDX license ids from model cards." }
+      },
+      {
+        "@type": "Question",
+        "name": "How fresh is the catalog?",
+        "acceptedAnswer": { "@type": "Answer", "text": "The catalog refreshes every 3 hours from the Hugging Face Hub and covers around 3 million public models." }
+      }
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header>
+    <div class="header-top">
+      <h1>Hugging Face Model Indexer</h1>
+      <div class="header-actions">
+        <a class="github-link" href="https://github.com/amagyar/hf-indexer" target="_blank" rel="noopener noreferrer" aria-label="View source on GitHub">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.56 0-.27-.01-1.17-.02-2.12-3.2.7-3.88-1.36-3.88-1.36-.52-1.33-1.28-1.68-1.28-1.68-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.19 1.76 1.19 1.03 1.76 2.69 1.25 3.35.96.1-.75.4-1.25.72-1.54-2.55-.29-5.23-1.28-5.23-5.68 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11.1 11.1 0 0 1 5.8 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.83 1.19 3.09 0 4.41-2.69 5.38-5.25 5.67.41.35.77 1.05.77 2.12 0 1.53-.01 2.76-.01 3.14 0 .31.21.68.8.56A10.52 10.52 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5Z"/></svg>
+          <span>GitHub</span>
+        </a>
+        <button id="theme-toggle" type="button" aria-label="Switch to light mode" aria-pressed="false">
+          <svg class="icon-moon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+          <svg class="icon-sun" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+        </button>
+      </div>
+    </div>
+    <p class="subtitle">Search and filter every model on the Hugging Face Hub by size, format, license, and date — right in your browser.</p>
+    <p class="sr-only">A free, client-side search engine for the Hugging Face Hub. Browse and filter around three million models — transformers, safetensors, GGUF, AWQ, GPTQ, compressed-tensors, bitsandbytes, MLX, BitNet, and ONNX — by parameter count, weight format, license (Apache-2.0, MIT, Llama, and more), downloads, and created or modified date. Queries run locally in your browser via DuckDB WebAssembly over Parquet; there is no backend and no tracking. Use it to find small models for local inference, filter by open license, or discover the most downloaded open-source large language models.</p>
+  </header>
+
+  <main>
+    <noscript>
+      <p>The Hugging Face Model Indexer needs JavaScript to run interactive
+      queries. It is a free index of around 3 million public Hugging Face
+      models searchable by parameter size, weight format (GGUF, AWQ, GPTQ,
+      MLX, ONNX, safetensors), license (Apache-2.0, MIT, Llama), downloads,
+      likes, and created/modified date. Data source:
+      <a href="https://huggingface.co/models">huggingface.co/models</a>.</p>
+    </noscript>
+    <section id="status-banner" class="status loading" role="status" aria-live="polite">
+      <span id="status-text">Initializing DuckDB WASM&hellip;</span>
+    </section>
+
+    <section id="error-banner" class="error hidden" role="alert"></section>
+
+    <form id="filter-form" aria-label="Model filters">
+      <div class="field field-id">
+        <label for="f-id">Model ID</label>
+        <input id="f-id" name="id" type="search" placeholder="e.g. llama, mistral, qwen" autocomplete="off" />
+      </div>
+
+      <div class="field-pair pair-size">
+        <div class="field">
+          <label for="f-min-size">Min size (B)</label>
+          <input id="f-min-size" name="min_size" type="number" min="0" step="0.1" placeholder="0" />
+        </div>
+        <div class="field">
+          <label for="f-max-size">Max size (B)</label>
+          <input id="f-max-size" name="max_size" type="number" min="0" step="0.1" placeholder="&infin;" />
+        </div>
+      </div>
+
+      <div class="field field-format">
+        <label for="f-format">Format</label>
+        <input id="f-format" name="format" list="format-options" type="search"
+               placeholder="e.g. gguf, safetensors, mlx" autocomplete="off" />
+        <datalist id="format-options">
+          <option value="gguf"></option>
+          <option value="awq"></option>
+          <option value="gptq"></option>
+          <option value="exl2"></option>
+          <option value="compressed-tensors"></option>
+          <option value="bitsandbytes"></option>
+          <option value="mlx"></option>
+          <option value="onnx"></option>
+          <option value="bitnet"></option>
+          <option value="safetensors"></option>
+        </datalist>
+      </div>
+
+      <div class="field field-license">
+        <label for="f-license">License</label>
+        <input id="f-license" name="license" type="search" placeholder="e.g. apache, mit, llama" autocomplete="off" />
+      </div>
+
+      <div class="field-pair pair-created">
+        <div class="field">
+          <label for="f-created-from">Created from</label>
+          <input id="f-created-from" name="created_from" type="date" />
+        </div>
+        <div class="field">
+          <label for="f-created-to">Created to</label>
+          <input id="f-created-to" name="created_to" type="date" />
+        </div>
+      </div>
+
+      <div class="field-pair pair-modified">
+        <div class="field">
+          <label for="f-modified-from">Modified from</label>
+          <input id="f-modified-from" name="modified_from" type="date" />
+        </div>
+        <div class="field">
+          <label for="f-modified-to">Modified to</label>
+          <input id="f-modified-to" name="modified_to" type="date" />
+        </div>
+      </div>
+
+      <div class="field actions">
+        <button id="search-btn" type="submit">Search</button>
+      </div>
+    </form>
+
+    <section class="results-meta">
+      <span id="row-count" aria-live="polite"></span>
+    </section>
+
+    <section class="table-wrap">
+      <table id="results-table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Size (B)</th>
+            <th>Format</th>
+            <th>License</th>
+            <th>Downloads</th>
+            <th>Likes</th>
+            <th>Created</th>
+            <th>Modified</th>
+          </tr>
+        </thead>
+        <tbody id="results-body">
+          <tr class="empty-row"><td colspan="8">Enter filters and click Search.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="about">
+      <h2>About this index</h2>
+      <p>The Hugging Face Model Indexer tracks the full public catalog on
+      <a href="https://huggingface.co/models">huggingface.co/models</a> —
+      transformers and safetensors checkpoints alongside GGUF, AWQ, GPTQ,
+      EXL2, bitsandbytes, MLX, BitNet, and ONNX weights. The catalog refreshes
+      every 3 hours; every query runs locally in your browser via DuckDB-WASM over
+      Parquet, so searches never leave your machine. Source code:
+      <a href="https://github.com/amagyar/hf-indexer">github.com/amagyar/hf-indexer</a>.</p>
+      <h2>FAQ</h2>
+      <dl>
+        <dt>How do I find GGUF models by size?</dt>
+        <dd>Enter <code>gguf</code> in Format and set Min/Max size (e.g. 7 to 13), then Search.</dd>
+        <dt>How do I filter by license?</dt>
+        <dd>Enter <code>apache</code>, <code>mit</code>, or <code>llama</code> in License.</dd>
+        <dt>How fresh is the catalog?</dt>
+        <dd>Refresh from the Hugging Face Hub every 3 hours; around 3 million public models.</dd>
+      </dl>
+    </section>
+  </main>
+
+  <!-- DuckDB WASM (pinned JsDelivr CDN). ESM + worker bootstrap in app.js. -->
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
