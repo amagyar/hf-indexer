@@ -107,8 +107,9 @@ KNOWN_FORMATS = (
 
 # Canonical JSONL schema order.
 RECORD_KEYS = (
-    "id", "author", "url", "size_b", "format", "license", "tags",
-    "downloads", "likes", "created_at", "modified_at", "metrics_refreshed_at",
+    "id", "author", "url", "size_b", "format", "license", "has_weights",
+    "tags", "downloads", "likes", "created_at", "modified_at",
+    "metrics_refreshed_at",
 )
 
 
@@ -226,6 +227,28 @@ def parse_size(tags: Iterable[str], model_id: str,
     return None
 
 
+def parse_has_weights(safetensors: Optional[Dict[str, Any]],
+                      gguf: Optional[Dict[str, Any]],
+                      tags: Iterable[str], model_id: str) -> bool:
+    """Derive whether the repository actually contains weight files.
+
+    True when any authoritative weight signal exists:
+      1. A non-empty `safetensors` expansion (Hub-exposed parameter counts).
+      2. A non-empty `gguf` expansion.
+      3. A known weight-format tag (incl. the auto-added `safetensors` tag).
+      4. A parseable size signal (`size:<n>b` tag or id regex).
+    False otherwise - a README-only repo with no weight files.
+
+    Known limitation: repos carrying only legacy `.bin` weights expose none of
+    these signals via the list API and classify as false.
+    """
+    if safetensors or gguf:
+        return True
+    if parse_format(tags) != "unknown":
+        return True
+    return parse_size(tags, model_id) is not None
+
+
 def model_to_record(model: Dict[str, Any], captured_at: Optional[str] = None) -> Dict[str, Any]:
     """Convert a raw HF API model dict to our JSONL record dict.
 
@@ -253,6 +276,7 @@ def model_to_record(model: Dict[str, Any], captured_at: Optional[str] = None) ->
         "size_b": parse_size(tags, model_id, param_total),
         "format": parse_format(tags),
         "license": parse_license(card_data, tags),
+        "has_weights": parse_has_weights(safetensors, gguf, tags, model_id),
         "tags": tags,
         "downloads": int(model.get("downloads") or 0),
         "likes": int(model.get("likes") or 0),

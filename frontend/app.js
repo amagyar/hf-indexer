@@ -25,8 +25,22 @@ const els = {
   createdTo: document.getElementById("f-created-to"),
   modifiedFrom: document.getElementById("f-modified-from"),
   modifiedTo: document.getElementById("f-modified-to"),
+  minDownloads: document.getElementById("f-min-downloads"),
+  hideEmpty: document.getElementById("f-hide-empty"),
+  hideEmptyHint: document.getElementById("hide-empty-hint"),
   rowCount: document.getElementById("row-count"),
   resultsBody: document.getElementById("results-body"),
+  hiddenCount: document.getElementById("hidden-count"),
+  exportNote: document.getElementById("export-note"),
+  blocklistBtn: document.getElementById("blocklist-btn"),
+  blocklistBtnLabel: document.getElementById("blocklist-btn-label"),
+  blocklistModal: document.getElementById("blocklist-modal"),
+  blocklistEntries: document.getElementById("blocklist-entries"),
+  blocklistEmpty: document.getElementById("blocklist-empty"),
+  blocklistClear: document.getElementById("blocklist-clear"),
+  blocklistClose: document.getElementById("blocklist-close"),
+  exportCsvBtn: document.getElementById("export-csv-btn"),
+  exportJsonBtn: document.getElementById("export-json-btn"),
 };
 
 // ---------------------------------------------------------------------------
@@ -165,13 +179,37 @@ async function initDuckDB() {
     console.info(`[hf-indexer] Registered ${PARQUET_SHARDS} parquet shards via buffer.`);
   }
 
+  // Feature-detect the `has_weights` column. The published Parquet may predate
+  // the pipeline change (or local dev may serve old shards); in that case the
+  // hide-empty checkbox stays disabled and its predicate is omitted, so this
+  // frontend works with any shard generation.
+  try {
+    const desc = await conn.query("DESCRIBE models");
+    hasWeightsColumn = desc.toArray().some((r) => r.column_name === "has_weights");
+  } catch (err) {
+    console.warn("[hf-indexer] DESCRIBE models failed; assuming no has_weights column:", err);
+    hasWeightsColumn = false;
+  }
+  if (!hasWeightsColumn && els.hideEmpty) {
+    els.hideEmpty.disabled = true;
+    els.hideEmpty.checked = false;
+    if (els.hideEmptyHint) els.hideEmptyHint.classList.remove("hidden");
+  }
+
   setStatus("ready", "Ready. Indexed and queryable.");
 }
 
 // ---------------------------------------------------------------------------
 // Filter form -> parameterized SQL
 // ---------------------------------------------------------------------------
-function buildQuery() {
+// Set to true after init once the published Parquet is confirmed to carry the
+// `has_weights` column. When false (stale published data / local dev with old
+// shards), the hide-empty checkbox is disabled and its predicate omitted, so
+// queries keep working regardless of deployment order.
+let hasWeightsColumn = false;
+
+/** Collect the form filters (everything except the blocklist) as SQL pieces. */
+function collectFilters() {
   const params = [];
   const conditions = [];
 
@@ -211,6 +249,25 @@ function buildQuery() {
     params.push(`%${licenseText}%`);
   }
 
+  // Minimum-downloads threshold (anti-spam lever): bound only when non-empty,
+  // integer-coerced (the strict WASM prepared-statement binder dislikes loose
+  // numeric types, cf. the TIMESTAMPTZ CAST below).
+  const minDl = els.minDownloads.value.trim();
+  if (minDl !== "") {
+    const n = Number.parseInt(minDl, 10);
+    if (!Number.isNaN(n) && n >= 0) {
+      conditions.push("downloads >= ?");
+      params.push(n);
+    }
+  }
+
+  // Hide empty repos: only confirmed-empty models (has_weights = false) are
+  // hidden. Null means "not yet re-swept by the pipeline" and is kept visible,
+  // so unknown records are never silently dropped.
+  if (hasWeightsColumn && els.hideEmpty.checked && !els.hideEmpty.disabled) {
+    conditions.push("has_weights IS DISTINCT FROM FALSE");
+  }
+
   // Date-range filters. `type=date` inputs yield YYYY-MM-DD; bound them to the
   // start (00:00:00Z) or end (23:59:59Z) of that UTC day so a single date is
   // inclusive of the whole day.
@@ -238,15 +295,50 @@ function buildQuery() {
     params.push(modifiedToVal);
   }
 
+  return { conditions, params };
+}
+
+/**
+ * Build the results query.
+ * @param {object} [opts]
+ * @param {number} [opts.limit=500]   Render cap, or the larger export cap.
+ * @param {boolean} [opts.withBlocklist=true] Apply the author blocklist.
+ */
+function buildQuery({ limit = 500, withBlocklist = true } = {}) {
+  const { conditions, params } = collectFilters();
+
+  if (withBlocklist) {
+    // `starts_with` matches the author prefix literally - no LIKE wildcard
+    // escaping to worry about.
+    for (const author of blockedAuthors) {
+      conditions.push("NOT starts_with(id, ?)");
+      params.push(`${author}/`);
+    }
+  }
+
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
   const sql = `
     SELECT id, size_b, format, license, downloads, likes, modified_at, created_at
     FROM models
     ${where}
     ORDER BY downloads DESC
-    LIMIT 500
+    LIMIT ${limit}
   `;
   return { sql, params };
+}
+
+/** Count how many rows the ACTIVE filters match that are hidden by the
+ *  blocklist (one extra aggregate query, run only when blocking is active). */
+function buildHiddenCountQuery() {
+  const { conditions, params } = collectFilters();
+  const blocked = blockedAuthors.map(() => "starts_with(id, ?)");
+  const all = [...conditions, `(${blocked.join(" OR ")})`];
+  const sql = `
+    SELECT count(*) AS hidden
+    FROM models
+    WHERE ${all.join(" AND ")}
+  `;
+  return { sql, params: [...params, ...blockedAuthors.map((a) => `${a}/`)] };
 }
 
 // ---------------------------------------------------------------------------
@@ -259,7 +351,7 @@ function renderRows(rows) {
     const tr = document.createElement("tr");
     tr.className = "empty-row";
     const td = document.createElement("td");
-    td.colSpan = 8;
+    td.colSpan = 9;
     td.textContent = "No models matched the current filters.";
     tr.appendChild(td);
     els.resultsBody.appendChild(tr);
@@ -322,6 +414,40 @@ function renderRows(rows) {
     tdMod.textContent = formatDate(r.modified_at);
     tr.appendChild(tdMod);
 
+    // Actions: copy download command + block author. Models without an
+    // author prefix in their id have nothing sensible to block.
+    const tdActions = document.createElement("td");
+    tdActions.className = "cell-actions";
+    const author = r.id.includes("/") ? r.id.split("/", 1)[0] : null;
+
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.className = "row-btn";
+    copyBtn.title = "Copy download command";
+    copyBtn.setAttribute("aria-label", `Copy download command for ${r.id}`);
+    copyBtn.innerHTML =
+      '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" ' +
+      'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+    copyBtn.addEventListener("click", () => copyDownloadCommand(r.id, copyBtn));
+    tdActions.appendChild(copyBtn);
+
+    if (author) {
+      const blockBtn = document.createElement("button");
+      blockBtn.type = "button";
+      blockBtn.className = "row-btn";
+      blockBtn.title = `Block ${author}`;
+      blockBtn.setAttribute("aria-label", `Block ${author} (hide all their models)`);
+      blockBtn.innerHTML =
+        '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" ' +
+        'stroke-width="2" stroke-linecap="round" aria-hidden="true">' +
+        '<circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/></svg>';
+      blockBtn.addEventListener("click", () => blockAuthor(author));
+      tdActions.appendChild(blockBtn);
+    }
+
+    tr.appendChild(tdActions);
+
     els.resultsBody.appendChild(tr);
   }
 }
@@ -331,6 +457,242 @@ function formatDate(value) {
   const d = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(d.getTime())) return "\u2014";
   return d.toISOString().slice(0, 10);
+}
+
+// ---------------------------------------------------------------------------
+// Author blocklist (localStorage only - never leaves the browser)
+// ---------------------------------------------------------------------------
+const BLOCKLIST_KEY = "hf-indexer:blocklist";
+
+let blockedAuthors = loadBlocklist();
+
+function loadBlocklist() {
+  try {
+    const raw = localStorage.getItem(BLOCKLIST_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return [];
+    return [...new Set(parsed.filter((v) => typeof v === "string" && v))];
+  } catch {
+    return [];
+  }
+}
+
+function saveBlocklist() {
+  try {
+    localStorage.setItem(BLOCKLIST_KEY, JSON.stringify(blockedAuthors));
+  } catch {
+    // Storage unavailable (e.g. private mode) - the in-memory list still works.
+  }
+}
+
+function blockAuthor(author) {
+  if (!author || blockedAuthors.includes(author)) return;
+  blockedAuthors.push(author);
+  saveBlocklist();
+  updateBlocklistUi();
+  runSearch();
+}
+
+function unblockAuthor(author) {
+  blockedAuthors = blockedAuthors.filter((a) => a !== author);
+  saveBlocklist();
+  updateBlocklistUi();
+}
+
+function updateBlocklistUi() {
+  const n = blockedAuthors.length;
+  if (els.blocklistBtnLabel) {
+    els.blocklistBtnLabel.textContent = n > 0 ? `Blocked (${n})` : "Blocked";
+  }
+}
+
+// --- Management modal ------------------------------------------------------
+
+function openBlocklistModal() {
+  renderBlocklistModal();
+  if (typeof els.blocklistModal.showModal === "function") {
+    els.blocklistModal.showModal();
+  }
+}
+
+function renderBlocklistModal() {
+  els.blocklistEntries.innerHTML = "";
+  const n = blockedAuthors.length;
+  els.blocklistEmpty.classList.toggle("hidden", n > 0);
+  els.blocklistClear.disabled = n === 0;
+  for (const author of blockedAuthors) {
+    const li = document.createElement("li");
+    const name = document.createElement("span");
+    name.textContent = author;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = "Remove";
+    btn.setAttribute("aria-label", `Unblock ${author}`);
+    btn.addEventListener("click", () => {
+      unblockAuthor(author);
+      renderBlocklistModal();
+      runSearch();
+    });
+    li.appendChild(name);
+    li.appendChild(btn);
+    els.blocklistEntries.appendChild(li);
+  }
+}
+
+// --- Hidden-results feedback -----------------------------------------------
+
+async function updateHiddenIndicator() {
+  if (!conn || blockedAuthors.length === 0) {
+    els.hiddenCount.classList.add("hidden");
+    els.hiddenCount.textContent = "";
+    return;
+  }
+  try {
+    const { sql, params } = buildHiddenCountQuery();
+    const stmt = await conn.prepare(sql);
+    const result = await stmt.query(...params);
+    const hidden = Number(result.toArray()[0]?.hidden ?? 0);
+    if (hidden > 0) {
+      els.hiddenCount.textContent =
+        `${hidden.toLocaleString()} hidden by blocklist`;
+      els.hiddenCount.title = "Some results match your filters but are hidden by your blocklist. Click to manage.";
+      els.hiddenCount.classList.remove("hidden");
+    } else {
+      els.hiddenCount.classList.add("hidden");
+      els.hiddenCount.textContent = "";
+    }
+  } catch {
+    // The indicator is advisory; never surface its failures as errors.
+    els.hiddenCount.classList.add("hidden");
+    els.hiddenCount.textContent = "";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Copy download command (per-row action)
+// ---------------------------------------------------------------------------
+async function copyDownloadCommand(modelId, btn) {
+  const command = `huggingface-cli download ${modelId}`;
+  let copied = false;
+  try {
+    await navigator.clipboard.writeText(command);
+    copied = true;
+  } catch {
+    // Clipboard API unavailable (insecure context / permission denied) -
+    // fall back to the legacy selected-text copy.
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = command;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      copied = document.execCommand("copy");
+      ta.remove();
+    } catch {
+      copied = false;
+    }
+  }
+  if (copied && btn) {
+    const original = btn.getAttribute("aria-label");
+    btn.classList.add("copied");
+    btn.setAttribute("aria-label", "Copied!");
+    setTimeout(() => {
+      btn.classList.remove("copied");
+      btn.setAttribute("aria-label", original);
+    }, 1200);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Export current query (CSV / JSON) - fully client-side
+// ---------------------------------------------------------------------------
+const EXPORT_ROW_CAP = 100000;
+
+const EXPORT_COLUMNS = [
+  "id", "size_b", "format", "license",
+  "downloads", "likes", "modified_at", "created_at",
+];
+
+/** Normalize a DuckDB row value for serialization (Date -> ISO string,
+ *  BigInt -> Number; int64 counters are far below Number.MAX_SAFE_INTEGER). */
+function exportValue(v) {
+  if (v instanceof Date) return v.toISOString();
+  if (typeof v === "bigint") return Number(v);
+  return v;
+}
+
+function csvEscape(value) {
+  if (value == null) return "";
+  const s = String(value);
+  if (/[",\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+function toCsv(rows) {
+  const lines = [EXPORT_COLUMNS.join(",")];
+  for (const row of rows) {
+    lines.push(EXPORT_COLUMNS.map((c) => csvEscape(exportValue(row[c]))).join(","));
+  }
+  return lines.join("\r\n") + "\r\n";
+}
+
+function toJson(rows) {
+  const records = rows.map((row) => {
+    const o = {};
+    for (const c of EXPORT_COLUMNS) o[c] = exportValue(row[c]);
+    return o;
+  });
+  return JSON.stringify(records, null, 2);
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function runExport(format) {
+  if (!conn) {
+    showError("DuckDB is not ready yet.");
+    return;
+  }
+  clearError();
+  els.exportNote.textContent = "";
+  const buttons = [els.exportCsvBtn, els.exportJsonBtn];
+  for (const b of buttons) b.disabled = true;
+
+  try {
+    // Re-run the ACTIVE filters (blocklist included) without the 500-row
+    // render cap - the export reflects the query, not the rendered page.
+    const { sql, params } = buildQuery({ limit: EXPORT_ROW_CAP });
+    const stmt = await conn.prepare(sql);
+    const result = await stmt.query(...params);
+    const rows = result.toArray();
+
+    const stamp = new Date().toISOString().replace(/[-:.]/g, "").slice(0, 15); // YYYYMMDDTHHMMSS
+    if (format === "csv") {
+      downloadBlob(new Blob([toCsv(rows)], { type: "text/csv;charset=utf-8" }),
+        `hf-models-${stamp}.csv`);
+    } else {
+      downloadBlob(new Blob([toJson(rows)], { type: "application/json;charset=utf-8" }),
+        `hf-models-${stamp}.json`);
+    }
+
+    if (rows.length >= EXPORT_ROW_CAP) {
+      els.exportNote.textContent =
+        `Export capped at ${EXPORT_ROW_CAP.toLocaleString()} rows - narrow the filters for the full result set.`;
+    }
+  } catch (err) {
+    showError(`Export failed: ${err && err.message ? err.message : String(err)}`);
+  } finally {
+    for (const b of buttons) b.disabled = false;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -367,6 +729,7 @@ async function runSearch(event) {
     }));
     renderRows(rows);
     els.rowCount.textContent = `${rows.length} model${rows.length === 1 ? "" : "s"} matched${rows.length >= 500 ? " (capped at 500)" : ""}.`;
+    await updateHiddenIndicator();
   } catch (err) {
     showError(`Query failed: ${err && err.message ? err.message : String(err)}`);
     els.rowCount.textContent = "";
@@ -380,7 +743,21 @@ async function runSearch(event) {
 // Boot
 // ---------------------------------------------------------------------------
 initTheme();
+updateBlocklistUi();
 els.form.addEventListener("submit", runSearch);
+
+els.blocklistBtn.addEventListener("click", openBlocklistModal);
+els.hiddenCount.addEventListener("click", openBlocklistModal);
+els.blocklistClose.addEventListener("click", () => els.blocklistModal.close());
+els.blocklistClear.addEventListener("click", () => {
+  blockedAuthors = [];
+  saveBlocklist();
+  updateBlocklistUi();
+  renderBlocklistModal();
+  runSearch();
+});
+els.exportCsvBtn.addEventListener("click", () => runExport("csv"));
+els.exportJsonBtn.addEventListener("click", () => runExport("json"));
 
 initDuckDB().catch((err) => {
   setStatus("error", "DuckDB failed to initialize.");

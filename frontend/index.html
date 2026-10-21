@@ -176,6 +176,19 @@
         </div>
       </div>
 
+      <div class="field field-min-downloads">
+        <label for="f-min-downloads">Min downloads</label>
+        <input id="f-min-downloads" name="min_downloads" type="number" min="0" step="1" placeholder="0" inputmode="numeric" />
+      </div>
+
+      <div class="field field-check field-hide-empty">
+        <label for="f-hide-empty">
+          <input id="f-hide-empty" name="hide_empty" type="checkbox" checked />
+          Hide empty repos
+        </label>
+        <p id="hide-empty-hint" class="field-hint hidden">Empty-repo data not published yet &mdash; appears after the next index update.</p>
+      </div>
+
       <div class="field actions">
         <button id="search-btn" type="submit">Search</button>
       </div>
@@ -183,6 +196,22 @@
 
     <section class="results-meta">
       <span id="row-count" aria-live="polite"></span>
+      <button id="hidden-count" type="button" class="hidden-note hidden"
+              aria-haspopup="dialog" title="Open the blocklist manager"></button>
+      <span id="export-note" aria-live="polite"></span>
+      <span class="toolbar-spacer"></span>
+      <button id="blocklist-btn" type="button" class="tool-btn" aria-haspopup="dialog">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/></svg>
+        <span id="blocklist-btn-label">Blocked</span>
+      </button>
+      <button id="export-csv-btn" type="button" class="tool-btn" title="Download the current filtered results as CSV">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        CSV
+      </button>
+      <button id="export-json-btn" type="button" class="tool-btn" title="Download the current filtered results as JSON">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        JSON
+      </button>
     </section>
 
     <section class="table-wrap">
@@ -197,10 +226,11 @@
             <th>Likes</th>
             <th>Created</th>
             <th>Modified</th>
+            <th class="th-actions">Actions</th>
           </tr>
         </thead>
         <tbody id="results-body">
-          <tr class="empty-row"><td colspan="8">Enter filters and click Search.</td></tr>
+          <tr class="empty-row"><td colspan="9">Enter filters and click Search.</td></tr>
         </tbody>
       </table>
     </section>
@@ -225,6 +255,21 @@
       </dl>
     </section>
   </main>
+
+  <!-- Local author blocklist manager. Entries live only in this browser's
+       localStorage; nothing is ever sent anywhere. -->
+  <dialog id="blocklist-modal" aria-labelledby="blocklist-title">
+    <h2 id="blocklist-title">Blocked authors</h2>
+    <p class="modal-hint">Models from these authors are hidden from your searches.
+    The list is stored only in this browser (localStorage) &mdash; never uploaded.</p>
+    <ul id="blocklist-entries"></ul>
+    <p id="blocklist-empty" class="modal-empty">Nothing blocked yet. Use the
+    block button on any result row to hide an author.</p>
+    <div class="modal-actions">
+      <button id="blocklist-clear" type="button" class="danger">Clear all</button>
+      <button id="blocklist-close" type="button" class="secondary">Close</button>
+    </div>
+  </dialog>
 
   <!-- DuckDB WASM (pinned JsDelivr CDN). ESM + worker bootstrap in app.js. -->
   <script type="module" src="./app.js"></script>

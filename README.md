@@ -42,6 +42,16 @@ your machine.
   `bitsandbytes`, `mlx`, `bitnet`, `onnx`, or `unknown`.
 - 📜 **License free-text filter** — matches SPDX ids (apache, mit, llama…).
 - 📅 **Date-range filters** — `created_at` and `modified_at`.
+- 🚫 **Anti-noise filters** — a min-downloads threshold plus a "hide empty
+  repos" toggle that drops README-only repositories (over half of all new
+  uploads on the Hub).
+- 🙈 **Local author blocklist** — hide a spammy author with one click from any
+  result row; managed in a modal and stored only in your browser
+  (localStorage). Nothing is ever uploaded.
+- 📋 **Copy download command** — per-row button copies
+  `huggingface-cli download <repo_id>` for terminal workflows.
+- 💾 **Export results** — download the current filtered query as CSV or JSON,
+  generated client-side (capped at 100,000 rows).
 - ⭐ **Sorted by downloads** — most popular models first (top 500 per query).
 - ⚡ **Private & static** — no server, no database, no tracking. The whole thing
   is served from GitHub Pages.
@@ -122,4 +132,9 @@ ARCHITECTURE.md Full system design and key decisions
 - `format` reflects the weight/runtime format (gguf, awq, …), not the
   quantization *level* (e.g. `Q4_K_M`). Per-file quant levels aren't exposed by
   the Hub list API and would require a per-model fetch — not yet implemented.
+- `has_weights` marks README-only repos as empty. Repositories carrying only
+  legacy `.bin` weights expose no weight signal via the list API and may be
+  misclassified as empty.
+- Exports are capped at 100,000 rows; the UI shows a notice when the cap
+  truncates the result set.
 - Built and maintained in the open. Issues and ideas welcome.

@@ -200,8 +200,10 @@ main {
 .pair-size { grid-column: span 3; }
 .field-format { grid-column: span 3; }
 .field-license { grid-column: span 3; }
-.pair-created { grid-column: span 6; }
-.pair-modified { grid-column: span 6; }
+.pair-created { grid-column: span 4; }
+.pair-modified { grid-column: span 4; }
+.field-min-downloads { grid-column: span 2; }
+.field-hide-empty { grid-column: span 2; }
 .actions {
   grid-column: span 3;
   display: flex;
@@ -228,6 +230,41 @@ main {
 
 .field-pair .field label {
   font-size: 0.6875rem;
+}
+
+/* Checkbox field (e.g. hide-empty): label and input inline. */
+.field-check {
+  justify-content: end;
+  padding-bottom: 8px;
+}
+
+.field-check label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  color: var(--text);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  user-select: none;
+}
+
+.field-check input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.field-check input[type="checkbox"]:disabled {
+  cursor: not-allowed;
+}
+
+.field-hint {
+  margin: 2px 0 0;
+  font-size: 0.6875rem;
+  color: var(--text-muted);
 }
 
 .field label {
@@ -278,7 +315,55 @@ button#search-btn:disabled {
   color: var(--text-muted);
   margin-bottom: 8px;
   min-height: 1.2em;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
 }
+
+.results-meta .toolbar-spacer { flex: 1 1 auto; }
+
+/* Toolbar buttons (blocklist manager, exports) share the header button look. */
+.tool-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elev-2);
+  color: var(--text);
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.tool-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.tool-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.tool-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.hidden-note {
+  border: none;
+  padding: 0;
+  background: none;
+  color: var(--warning);
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-family: inherit;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  cursor: pointer;
+}
+
+.hidden-note:hover { color: var(--text); }
+
+#export-note { color: var(--warning); font-size: 0.75rem; }
 
 /* Results table */
 .table-wrap {
@@ -337,12 +422,151 @@ tbody tr:hover td { background: var(--row-hover); }
 .cell-format, .cell-license { font-family: var(--mono); font-size: 0.8125rem; }
 .cell-date { color: var(--text-muted); font-size: 0.8125rem; }
 
+/* Row action buttons (block author, copy download command). */
+.th-actions { width: 64px; }
+
+.cell-actions {
+  white-space: nowrap;
+  text-align: right;
+}
+
+.row-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elev-2);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.row-btn + .row-btn { margin-left: 4px; }
+
+.row-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.row-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.row-btn.copied {
+  border-color: var(--success);
+  color: var(--success);
+}
+
+/* Blocklist modal (native <dialog>). */
+dialog#blocklist-modal {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  color: var(--text);
+  font-family: var(--font);
+  min-width: min(440px, calc(100vw - 48px));
+  max-width: calc(100vw - 48px);
+  padding: 20px;
+}
+
+dialog#blocklist-modal::backdrop {
+  background: rgba(0, 0, 0, 0.55);
+}
+
+dialog#blocklist-modal h2 {
+  margin: 0 0 4px;
+  font-size: 1.0625rem;
+  font-weight: 600;
+}
+
+.modal-hint {
+  margin: 0 0 12px;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+}
+
+#blocklist-entries {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+#blocklist-entries li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-bottom: 6px;
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+}
+
+#blocklist-entries li button {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elev-2);
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-family: inherit;
+  padding: 2px 10px;
+  cursor: pointer;
+}
+
+#blocklist-entries li button:hover {
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.modal-empty {
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+  margin: 0 0 8px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.modal-actions button {
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 0.8125rem;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.modal-actions .danger {
+  border: 1px solid var(--error);
+  background: transparent;
+  color: var(--error);
+  font-weight: 600;
+}
+
+.modal-actions .danger:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.modal-actions .secondary {
+  border: 1px solid var(--border);
+  background: var(--bg-elev-2);
+  color: var(--text);
+}
+
 @media (max-width: 1100px) {
   /* Stack every group full-width; each .field-pair keeps its two inputs
      side by side (it is a self-contained 2-col sub-grid). */
   #filter-form { grid-template-columns: 1fr; }
   .field-id, .pair-size, .field-format, .field-license,
-  .pair-created, .pair-modified, .actions { grid-column: 1 / -1; }
+  .pair-created, .pair-modified, .field-min-downloads, .field-hide-empty,
+  .actions { grid-column: 1 / -1; }
+  .field-check { justify-content: flex-start; padding-bottom: 0; }
   .actions { justify-content: stretch; }
   #search-btn { width: 100%; }
 }

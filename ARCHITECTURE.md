@@ -72,6 +72,12 @@ from this endpoint. 429s are retried with exponential backoff
 - `parse_size(tags, model_id, param_total)` — `param_total` (from
   `safetensors.total` / `gguf.total`) ÷ 1e9, then `size:<n>b` tag, then id
   regex (`7b`, MoE `8x7b`), else null.
+- `parse_has_weights(safetensors, gguf, tags, model_id)` — true when any
+  weight signal exists (non-empty `safetensors`/`gguf` expansion, a
+  `KNOWN_FORMATS` tag, or a parseable size), false for README-only repos.
+  Derived at fetch time because the raw expansions are discarded after
+  `size_b` is computed. Known limitation: `.bin`-only legacy repos expose no
+  signal via the list API and classify as empty.
 
 ### 2. Parquet builder — `scripts/build_parquet.py`
 
@@ -80,8 +86,8 @@ Reads the JSONL shards and writes the published Parquet shards:
   legacy single `models.jsonl.gz`.
 - `normalize_columns` — coerces to the canonical column set; drops the legacy
   `quant` column from the rename transition and backfills any missing canonical
-  column.
-- Trims to `PARQUET_COLUMNS` (the 8 frontend-facing columns).
+  column (records not yet re-swept get `has_weights` = null, never false).
+- Trims to `PARQUET_COLUMNS` (the 9 frontend-facing columns).
 - Buckets rows by `crc32(id) % PARQUET_SHARD_COUNT` and writes
   `models-000.parquet .. models-003.parquet` (zstd).
 
@@ -96,9 +102,18 @@ Static HTML/JS, no framework. `app.js`:
   `CREATE VIEW models AS SELECT * FROM read_parquet(['models-000.parquet', ...])`
   — the file list is inlined in the SQL (DuckDB binds a single `?` here as a
   glob string, not a list); filter values remain parameterized.
+- Feature-detects `has_weights` via `DESCRIBE models`; when the published
+  Parquet predates the column, the hide-empty checkbox disables itself and its
+  predicate is omitted — frontend and pipeline deploy in any order.
 - Builds parameterized SQL from the filter form (id substring, size range,
-  format, license substring, created/modified date ranges) and renders results.
-  `url` is reconstructed from `id` client-side.
+  format, license substring, min downloads, hide-empty, created/modified date
+  ranges) and renders results. `url` is reconstructed from `id` client-side.
+- Per-row actions: copy `huggingface-cli download <id>` to the clipboard, and
+  block the row's author (adds `NOT starts_with(id, '<author>/')` predicates;
+  the blocklist lives only in `localStorage`, managed via a native `<dialog>`
+  modal, with a one-query count of blocklist-hidden results as feedback).
+- Export: re-runs the active query with a 100k-row cap (independent of the
+  500-row render limit) and downloads it as CSV or JSON built client-side.
 
 ### 4. CI — `.github/workflows/update_index.yml`
 
@@ -116,7 +131,7 @@ on the next run.
 | Artifact | Shards | Sharded by | Purpose |
 |---|---|---|---|
 | `models-NNN.jsonl.gz` | 8 | `crc32(id) % 8` | Source-of-truth state (full record schema) |
-| `models-NNN.parquet` | 4 | `crc32(id) % 4` | Browser query target (frontend columns only) |
+| `models-NNN.parquet` | 4 | `crc32(id) % 4` | Browser query target (frontend columns only, incl. `has_weights`) |
 | `backfill_state.json` | 1 | — | `{cursor, complete}` for the sweep |
 
 **Why two shard counts.** The JSONL is server-side only (no per-query cost), so
@@ -147,6 +162,7 @@ frontend subset.
 | `size_b` | yes | yes | param count ÷ 1e9 (float32) |
 | `format` | yes | yes | gguf/awq/gptq/.../unknown |
 | `license` | yes | yes | SPDX id(s) or `license_name` |
+| `has_weights` | yes | yes | boolean; null = not yet re-swept (never false-by-default) |
 | `tags` | yes | — | raw tag list |
 | `downloads` | yes | yes | int64 |
 | `likes` | yes | yes | int64 |

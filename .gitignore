@@ -12,6 +12,7 @@ models.parquet
 
 # Misc
 .DS_Store
+tmp/
 
 # Node / Playwright (E2E tests)
 node_modules/

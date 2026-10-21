@@ -28,8 +28,8 @@ LOG = logging.getLogger("build_parquet")
 # rename transition (legacy records carry `quant`, new ones carry
 # `format` + `license`).
 CANONICAL_COLUMNS = (
-    "id", "author", "url", "size_b", "format", "license", "tags",
-    "downloads", "likes", "created_at", "modified_at", "metrics_refreshed_at",
+    "id", "author", "url", "size_b", "format", "license", "has_weights",
+    "tags", "downloads", "likes", "created_at", "modified_at", "metrics_refreshed_at",
 )
 # Legacy fields dropped during normalization.
 LEGACY_COLUMNS = ("quant",)
@@ -38,8 +38,11 @@ LEGACY_COLUMNS = ("quant",)
 # queries). Kept minimal for file size: `url` is reconstructed from `id` in the
 # frontend, and `author` / `tags` / `metrics_refreshed_at` are not used by any
 # frontend query. The full set still lives in the sharded JSONL state.
+# `has_weights` is nullable: null = not yet re-swept since the field was
+# introduced (never false), so the frontend can distinguish unknown from
+# confirmed-empty.
 PARQUET_COLUMNS = (
-    "id", "size_b", "format", "license",
+    "id", "size_b", "format", "license", "has_weights",
     "downloads", "likes", "created_at", "modified_at",
 )
 
@@ -53,6 +56,7 @@ PARQUET_SHARD_WIDTH = 3
 # Explicit column dtypes for DuckDB / Parquet optimization.
 NUMERIC_INT_COLS = ("downloads", "likes")
 NUMERIC_FLOAT_COLS = ("size_b",)
+BOOL_COLS = ("has_weights",)
 TIMESTAMP_COLS = ("created_at", "modified_at", "metrics_refreshed_at")
 LIST_COLS = ("tags",)
 
@@ -112,6 +116,13 @@ def coerce_types(df: pd.DataFrame) -> pd.DataFrame:
         if col in df.columns:
             # float32 per spec - small size, fine for parameter counts.
             df[col] = pd.to_numeric(df[col], errors="coerce").astype("float32")
+    for col in BOOL_COLS:
+        if col in df.columns:
+            # Nullable boolean (pandas "boolean" dtype): missing stays <NA> ->
+            # Parquet null, never false (un-swept records are unknown, not
+            # confirmed-empty). A plain `astype(bool)` would coerce NaN to
+            # True, and `fillna(False)` would lie about un-swept rows.
+            df[col] = df[col].astype("boolean")
     for col in TIMESTAMP_COLS:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], errors="coerce", utc=True)
@@ -129,6 +140,8 @@ def to_arrow_schema(df: pd.DataFrame) -> pa.Table:
             fields.append(pa.field(name, pa.int64()))
         elif name in NUMERIC_FLOAT_COLS:
             fields.append(pa.field(name, pa.float32()))
+        elif name in BOOL_COLS:
+            fields.append(pa.field(name, pa.bool_()))
         elif name in TIMESTAMP_COLS:
             fields.append(pa.field(name, pa.timestamp("us", tz="UTC")))
         elif name in LIST_COLS:
