@@ -54,10 +54,16 @@ def build_records():
     """The 460-record deterministic catalog (see module docstring)."""
     records = []
     for i in range(300):  # orgGood: weighted, llama/gguf/apache, downloads 0..299
+        license_ = "apache-2.0"
+        if i == 299:
+            license_ = "apache-2.0, mit"  # comma: exercises CSV quoting
+        elif i == 298:
+            license_ = 'say "hi" license'  # quotes: exercises CSV quote-doubling
         records.append(record(
             f"orgGood/llama-{i:03d}",
             size_b=7.0 + (i % 13),
             format="gguf" if i % 2 else "safetensors",
+            license=license_,
             has_weights=True, downloads=i, likes=i % 17,
         ))
     for i in range(120):  # orgSpam: README-only, downloads 0..19

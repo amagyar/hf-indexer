@@ -90,6 +90,9 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r scripts/requirements.txt
 
+      - name: Run Python unit tests
+        run: python3 -m unittest discover -s tests/unit -v
+
       - name: Generate fixture catalogs
         run: python3 tests/e2e/fixtures/generate_fixtures.py
           --output tests/e2e/fixtures/dist

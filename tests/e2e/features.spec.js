@@ -96,7 +96,11 @@ test("block author from a row hides its models and shows the indicator", async (
   await setFilters(page, { hideEmpty: false });
   expect(await search(page)).toBe(460);
 
-  // Block orgSpam from its first result row.
+  // Block orgSpam from its first result row. Capture every network request
+  // the action triggers: blocking + the hidden-count query must only ever
+  // touch the Parquet shards (same origin) - never any third party.
+  const requests = [];
+  page.on("request", (req) => requests.push(req.url()));
   const spamRow = page.locator("#results-body tr", { hasText: "orgSpam/" }).first();
   await expect(spamRow).toBeVisible();
   await spamRow.locator("button[aria-label^='Block orgSpam']").click();
@@ -104,6 +108,11 @@ test("block author from a row hides its models and shows the indicator", async (
   // Results update without a reload; orgSpam gone -> 340.
   await expect(page.locator("#row-count")).toContainText("340 models matched", { timeout: QUERY_TIMEOUT });
   await expect(page.locator("#results-body tr", { hasText: "orgSpam/" })).toHaveCount(0);
+  for (const url of requests) {
+    expect(url, "blocklist must not cause non-shard network requests").toMatch(
+      /^http:\/\/127\.0\.0\.1:8000\/models-\d{3}\.parquet/
+    );
+  }
 
   // Toolbar button shows the active count; hidden-results indicator appears.
   await expect(page.locator("#blocklist-btn-label")).toHaveText("Blocked (1)");
@@ -182,10 +191,20 @@ test("CSV and JSON export download the full filtered result set", async ({ page 
   await setFilters(page, { minDownloads: 200 });
   await search(page); // 100 rendered rows (orgGood i=200..299)
 
+  // Exports are computed client-side: during the CSV export the only network
+  // traffic allowed is Parquet shard reads from the same origin.
+  const requests = [];
+  page.on("request", (req) => requests.push(req.url()));
+
   const [download] = await Promise.all([
     page.waitForEvent("download"),
     page.locator("#export-csv-btn").click(),
   ]);
+  for (const url of requests) {
+    expect(url, "export must not cause non-shard network requests").toMatch(
+      /^http:\/\/127\.0\.0\.1:8000\/models-\d{3}\.parquet/
+    );
+  }
   expect(download.suggestedFilename()).toMatch(/^hf-models-\d{8}T\d{6}\.csv$/);
   const csv = (await download.path()).toString();
   const { readFileSync } = require("fs");
@@ -193,6 +212,15 @@ test("CSV and JSON export download the full filtered result set", async ({ page 
   const csvLines = csvText.trimEnd().split(/\r?\n/);
   expect(csvLines[0]).toBe("id,size_b,format,license,downloads,likes,modified_at,created_at");
   expect(csvLines).toHaveLength(101); // header + 100 rows (the full query, not the rendered page)
+
+  // RFC-4180 escaping: comma-containing fields are quoted, embedded quotes
+  // are doubled (licenses crafted in the fixture generator).
+  const row299 = csvLines.find((l) => l.startsWith("orgGood/llama-299,"));
+  expect(row299).toBeDefined();
+  expect(row299).toContain('"apache-2.0, mit"');
+  const row298 = csvLines.find((l) => l.startsWith("orgGood/llama-298,"));
+  expect(row298).toBeDefined();
+  expect(row298).toContain('"say ""hi"" license"');
 
   const [downloadJson] = await Promise.all([
     page.waitForEvent("download"),
@@ -206,6 +234,8 @@ test("CSV and JSON export download the full filtered result set", async ({ page 
   expect(jsonData[0]).toHaveProperty("downloads");
   // Sorted by downloads desc: first row carries the highest counter.
   expect(jsonData[0].downloads).toBeGreaterThanOrEqual(jsonData[99].downloads);
+  // JSON needs no quoting: the comma license round-trips verbatim.
+  expect(jsonData[0].license).toBe("apache-2.0, mit");
 
   // No truncation notice below the cap.
   await expect(page.locator("#export-note")).toHaveText("");

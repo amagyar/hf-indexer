@@ -72,21 +72,23 @@ confirmed-empty repos hide. Users who want the raw catalog uncheck one box.
 rejected because it ships the feature effectively disabled for the audience
 that asked for it. Easy to flip before release.
 
-### D5: Blocklist = localStorage array + parameterized `NOT LIKE` clauses
+### D5: Blocklist = localStorage array + parameterized `starts_with` clauses
 
 Storage: `localStorage["hf-indexer:blocklist"]` as a JSON array of author
 strings (exact `org/` prefix semantics). Query: for each blocked author, add
-`id NOT LIKE ?` with `author + '/%'` as a bound parameter — consistent with
-the existing parameterized-SQL requirement. `_` and `%` in author names are
-escaped (`\_`, `\%`) so they match literally. UI: a per-row 🚫 action; a
-toolbar button ("Blocked (N)") opening a native `<dialog>` modal listing
-entries with per-item remove and clear-all. The native dialog keeps the
-no-dependency constraint.
+`NOT starts_with(id, ?)` with `author + '/'` as a bound parameter — a literal
+prefix match, so there are no LIKE wildcards (`_`, `%`) to escape in author
+names. UI: a per-row 🚫 action; a toolbar button ("Blocked (N)") opening a
+native `<dialog>` modal listing entries with per-item remove and clear-all.
+The native dialog keeps the no-dependency constraint.
 
 Hidden-results feedback: when the blocklist is non-empty, run one extra
-`SELECT count(*)` with the same predicates minus the blocklist clauses, and
-show "N hidden by blocklist" (clickable → opens the modal). When the blocklist
-is empty the extra query is skipped entirely.
+`SELECT count(*)` counting rows that match the active filters AND any blocked
+author prefix (`starts_with(id, ?) OR …`), and show "N hidden by blocklist"
+(clickable → opens the modal). Counting the hidden rows directly — rather
+than comparing totals with and without the blocklist clauses — stays correct
+even when the visible result set exceeds the 500-row render cap. When the
+blocklist is empty the extra query is skipped entirely.
 
 ### D6: Export re-runs the query with an export cap, serialized in JS
 
