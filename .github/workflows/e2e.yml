@@ -2,7 +2,9 @@ name: E2E Tests
 
 on:
   schedule:
-    # Smoke-test the live site every 6 hours.
+    # Smoke-test the live site every 6 hours. The published catalog changes
+    # every ~3h without any code change, so this guards the frontend <->
+    # published-Parquet contract (schema drift, shard changes, Pages issues).
     - cron: '0 */6 * * *'
   workflow_dispatch:
     inputs:
@@ -10,9 +12,25 @@ on:
         description: 'Site URL to test'
         required: false
         default: 'https://amagyar.github.io/hf-indexer/'
+  push:
+    branches: [main]
+    paths:
+      - 'frontend/**'
+      - 'tests/e2e/**'
+      - 'playwright.config.js'
+      - '.github/workflows/e2e.yml'
+  pull_request:
+    paths:
+      - 'frontend/**'
+      - 'tests/e2e/**'
+      - 'playwright.config.js'
+      - '.github/workflows/e2e.yml'
 
 jobs:
-  e2e:
+  # Live-site smoke: only the generic suite. Deterministic, fixture-dependent
+  # tests (features.spec.js) must NOT run here - live counts change constantly.
+  live:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -29,8 +47,8 @@ jobs:
       - name: Install Playwright browser (chromium)
         run: npx playwright install --with-deps chromium
 
-      - name: Run E2E tests
-        run: npx playwright test
+      - name: Run live smoke tests
+        run: npx playwright test tests/e2e/index.spec.js
         env:
           SITE_URL: ${{ github.event.inputs.site_url || 'https://amagyar.github.io/hf-indexer/' }}
 
@@ -38,6 +56,68 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-report
+          name: playwright-report-live
+          path: playwright-report/
+          retention-days: 14
+
+  # Deterministic feature suite: generates the fixture catalogs locally, so it
+  # runs on every code change (push/PR) without touching the live site.
+  fixtures:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install Playwright browser (chromium)
+        run: npx playwright install --with-deps chromium
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: pip
+          cache-dependency-path: scripts/requirements.txt
+
+      - name: Install Python dependencies
+        run: pip install -r scripts/requirements.txt
+
+      - name: Generate fixture catalogs
+        run: python3 tests/e2e/fixtures/generate_fixtures.py
+          --output tests/e2e/fixtures/dist
+
+      - name: Start fixture servers
+        run: |
+          python3 -m http.server 8000 --bind 127.0.0.1 --directory tests/e2e/fixtures/dist/serve-new &
+          python3 -m http.server 8001 --bind 127.0.0.1 --directory tests/e2e/fixtures/dist/serve-old &
+          python3 -m http.server 8002 --bind 127.0.0.1 --directory tests/e2e/fixtures/dist/serve-big &
+          for port in 8000 8001 8002; do
+            for i in $(seq 1 30); do
+              curl -sf "http://127.0.0.1:${port}/" >/dev/null && echo "port ${port} up" && break
+              sleep 1
+            done
+            curl -sf "http://127.0.0.1:${port}/" >/dev/null || (echo "server on ${port} failed to start" && exit 1)
+          done
+
+      - name: Run fixture tests
+        run: npx playwright test tests/e2e/features.spec.js
+        env:
+          SITE_URL: http://127.0.0.1:8000/
+          SITE_URL_OLD: http://127.0.0.1:8001/
+          SITE_URL_BIG: http://127.0.0.1:8002/
+
+      - name: Upload Playwright report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-fixtures
           path: playwright-report/
           retention-days: 14

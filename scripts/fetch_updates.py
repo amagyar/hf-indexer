@@ -313,11 +313,34 @@ def _state_prefix(path: str) -> str:
 
 
 def _http_get(url: str, timeout: int = 60) -> requests.Response:
+    """GET a remote state/artifact URL with bounded retry.
+
+    These downloads hit GitHub Pages (not the HF API), so they bypass
+    `_hf_get`'s handling - but transient read timeouts on ~15MB shard
+    downloads used to kill the whole run. Retrying is safe: the GET is
+    idempotent and nothing is written until every shard has loaded. HTTP
+    statuses are NOT retried - 404 is a load-bearing signal (bootstrap /
+    legacy-migration detection) and is handled by the callers.
+    """
     headers = {}
     token = os.environ.get("HF_TOKEN")
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    return requests.get(url, params={"t": int(time.time())}, headers=headers, timeout=timeout)
+    backoff = INITIAL_BACKOFF_SECONDS
+    for attempt in range(MAX_RETRIES):
+        try:
+            return requests.get(url, params={"t": int(time.time())},
+                                headers=headers, timeout=timeout)
+        except requests.RequestException as exc:
+            if attempt == MAX_RETRIES - 1:
+                raise
+            sleep_s = min(backoff, BACKOFF_CAP_SECONDS)
+            LOG.warning("Transient error fetching %s (attempt %d/%d): %s. "
+                        "Sleeping %.1fs.", url, attempt + 1, MAX_RETRIES,
+                        exc, sleep_s)
+            time.sleep(sleep_s)
+            backoff *= BACKOFF_MULTIPLIER
+    raise RuntimeError("unreachable")  # pragma: no cover
 
 
 def _merge_jsonl_gz(state: Dict[str, Dict[str, Any]], content: bytes, label: str) -> int:

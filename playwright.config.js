@@ -13,7 +13,11 @@ module.exports = defineConfig({
   timeout: 180_000,            // generous: first load downloads ~39MB of wasm
   expect: { timeout: 30_000 },
   retries: process.env.CI ? 1 : 0,
-  reporter: process.env.CI ? [["github"], ["list"]] : "list",
+  reporter: [
+    ["list"],
+    // HTML report for the CI artifact upload step (never auto-opens).
+    ["html", { open: "never" }],
+  ],
   use: {
     baseURL: SITE_URL,
     actionTimeout: 60_000,
