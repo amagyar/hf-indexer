@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://amagyar.github.io/hf-indexer/sitemap.xml
